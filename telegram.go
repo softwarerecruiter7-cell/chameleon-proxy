@@ -16,6 +16,11 @@ type TelegramConfig struct {
 
 // SendTelegramMessage sends a formatted message to Telegram asynchronously
 func SendTelegramMessage(cfg TelegramConfig, message string) {
+	// FIX: Prevent useless API calls if credentials are missing (like on Render if you forget to set them)
+	if cfg.BotToken == "" || cfg.ChatID == "" {
+		return
+	}
+
 	go func() {
 		payload := map[string]interface{}{
 			"chat_id":    cfg.ChatID,

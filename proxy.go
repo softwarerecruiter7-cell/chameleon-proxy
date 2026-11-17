@@ -253,8 +253,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.Writer.Write([]byte(rewrittenBody))
 	})
 
-	log.Printf("🚀 Chameleon Proxy listening on :%s", listenPort)
-	r.Run(":" + listenPort)
+	log.Printf("🚀 Chameleon Proxy listening on 0.0.0.0:%s", listenPort)
+	// FIXED: Bound to 0.0.0.0 so Render can route traffic to it
+	r.Run("0.0.0.0:" + listenPort)
 }
 
 func (s *SessionStore) AddSession(userAgent string, data *SessionData) string {
