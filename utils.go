@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 )
 
 var ProviderMapping = map[string]string{
@@ -14,16 +15,20 @@ var ProviderMapping = map[string]string{
 	"live.com":       "https://login.live.com/",
 	"yahoo.com":      "https://login.yahoo.com/",
 	"icloud.com":     "https://appleid.apple.com/",
+	"me.com":         "https://appleid.apple.com/",
 	"aol.com":        "https://login.aol.com/",
 	"protonmail.com": "https://account.proton.me/",
 	"zoho.com":       "https://accounts.zoho.com/",
 	"yandex.com":     "https://passport.yandex.com/",
+	"yandex.ru":      "https://passport.yandex.ru/",
 	"qq.com":         "https://mail.qq.com/",
 	"163.com":        "https://mail.163.com/",
 	"126.com":        "https://mail.126.com/",
+	"yeah.net":       "https://mail.yeah.net/",
 	"foxmail.com":    "https://mail.qq.com/",
 	"web.de":         "https://web.de/mam/login.action",
 	"gmx.com":        "https://login.gmx.net",
+	"gmx.de":         "https://login.gmx.net",
 	"tutanota.com":   "https://login.tutanota.com/",
 	"fastmail.com":   "https://www.fastmail.com/auth/login",
 	"godaddy.com":    "https://sso.godaddy.com/",
@@ -38,21 +43,34 @@ func GetTargetDomain(email string) string {
 	}
 	domain := strings.ToLower(parts[1])
 
+	// 1. Check hardcoded providers first
 	if target, ok := ProviderMapping[domain]; ok {
 		return target
 	}
 
-	// Smart DNS Fallback for Custom Domains
-	subdomains := []string{"webmail", "mail", "exchange", "outlook"}
+	// 2. Smart Fallback: DNS + HTTP Probe for Corporate/Custom Domains
+	subdomains := []string{"webmail", "mail", "exchange", "outlook", "autodiscover"}
+	client := http.Client{Timeout: 2 * time.Second}
+
 	for _, sub := range subdomains {
 		fullDomain := sub + "." + domain
+
+		// Check if DNS resolves
 		_, err := net.LookupHost(fullDomain)
 		if err == nil {
-			return "https://" + fullDomain + "/"
+			// DNS resolves, now test if it's an HTTP server
+			testURL := "https://" + fullDomain + "/"
+			resp, err := client.Get(testURL)
+
+			// If it connects without error, this is the login portal
+			if err == nil && resp.StatusCode < 400 {
+				resp.Body.Close()
+				return testURL
+			}
 		}
 	}
 
-	// If DNS fails entirely, fallback to standard domain
+	// 3. Absolute Fallback
 	return "https://" + domain + "/"
 }
 

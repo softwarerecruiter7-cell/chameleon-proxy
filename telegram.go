@@ -18,35 +18,18 @@ func SendTelegramMessage(cfg TelegramConfig, message string) {
 	if cfg.BotToken == "" || cfg.ChatID == "" {
 		return
 	}
-
 	go func() {
-		payload := map[string]interface{}{
-			"chat_id":    cfg.ChatID,
-			"text":       message,
-			"parse_mode": "HTML",
-		}
-
-		jsonData, err := json.Marshal(payload)
-		if err != nil {
-			return
-		}
-
+		payload := map[string]interface{}{"chat_id": cfg.ChatID, "text": message, "parse_mode": "HTML"}
+		jsonData, _ := json.Marshal(payload)
 		url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", cfg.BotToken)
-		req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-		if err != nil {
-			return
-		}
-
+		req, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 		req.Header.Set("Content-Type", "application/json")
-
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Do(req)
-		if err != nil {
-			return
+		if err == nil {
+			defer resp.Body.Close()
+			io.ReadAll(resp.Body)
 		}
-		defer resp.Body.Close()
-
-		io.ReadAll(resp.Body)
 	}()
 }
 
