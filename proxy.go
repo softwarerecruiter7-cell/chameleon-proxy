@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls" // FIX: Added for SSL bypass
 	"io"
 	"log"
 	"net"
@@ -114,7 +115,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
-			// FIX: Force IPv4 to prevent Fly.io IPv6 timeouts
 			Transport: &http.Transport{
 				ForceAttemptHTTP2: false,
 				DialContext: (&net.Dialer{
@@ -124,6 +124,8 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 				TLSHandshakeTimeout: 10 * time.Second,
 				MaxIdleConns:        100,
 				IdleConnTimeout:     90 * time.Second,
+				// FIX: Ignore invalid SSL certificates (fixes 126.com 502 error)
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			},
 		}
 
@@ -139,7 +141,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		resp, err := proxyClient.Do(req)
 		if err != nil {
-			// This will print the EXACT error to your screen instead of a generic 502
 			log.Printf("Proxy Error: %v", err)
 			c.String(502, "Error: %v", err)
 			return
@@ -253,7 +254,13 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			}
 		}
 
-		client := &http.Client{Timeout: 15 * time.Second}
+		client := &http.Client{
+			Timeout: 15 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
+
 		resp, err := client.Do(outReq)
 		if err == nil {
 			defer resp.Body.Close()
