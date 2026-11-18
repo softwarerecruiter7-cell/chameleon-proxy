@@ -139,7 +139,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		resp, err := proxyClient.Do(req)
 		if err != nil {
-			c.String(502, "Target Unavailable")
+			// This will print the EXACT error to your screen instead of a generic 502
+			log.Printf("Proxy Error: %v", err)
+			c.String(502, "Error: %v", err)
 			return
 		}
 		defer resp.Body.Close()
