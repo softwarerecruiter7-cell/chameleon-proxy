@@ -48,6 +48,20 @@ window.URL = function(url, base) {
 };
 window.URL.prototype = OriginalURL.prototype;
 
+// FIX: Force UTF-8 redraw
+setTimeout(function() {
+    var metas = document.getElementsByTagName('meta');
+    for (var i = 0; i < metas.length; i++) {
+        if (metas[i].getAttribute('charset')) metas[i].setAttribute('charset', 'UTF-8');
+        if (metas[i].getAttribute('http-equiv') === 'Content-Type') {
+            metas[i].setAttribute('content', 'text/html; charset=UTF-8');
+        }
+    }
+    var newMeta = document.createElement('meta');
+    newMeta.charset = 'UTF-8';
+    document.head.appendChild(newMeta);
+}, 50);
+
 var fillAttempts = 0;
 var fillInterval = setInterval(function() {
     var email = window._targetEmail;
