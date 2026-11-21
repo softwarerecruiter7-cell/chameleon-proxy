@@ -8,15 +8,14 @@ import (
 )
 
 // ProviderMapping maps email domains to their primary login URLs.
-// Updated for 2026 current standards (e.g., MS moving to MicrosoftOnline).
 var ProviderMapping = map[string]string{
 	// US Providers
 	"gmail.com":      "https://accounts.google.com/",
 	"googlemail.com": "https://accounts.google.com/",
-	"outlook.com":    "https://login.microsoftonline.com/",
-	"hotmail.com":    "https://login.microsoftonline.com/",
-	"live.com":       "https://login.microsoftonline.com/",
-	"msn.com":        "https://login.microsoftonline.com/",
+	"outlook.com":    "https://login.microsoftonline.com/", // Fixed: Was login.live.com
+	"hotmail.com":    "https://login.microsoftonline.com/", // Fixed: Was login.live.com
+	"live.com":       "https://login.microsoftonline.com/", // Fixed: Was login.live.com
+	"msn.com":        "https://login.microsoftonline.com/", // Fixed: Was login.live.com
 	"yahoo.com":      "https://login.yahoo.com/",
 	"ymail.com":      "https://login.yahoo.com/",
 	"icloud.com":     "https://appleid.apple.com/",
@@ -34,7 +33,7 @@ var ProviderMapping = map[string]string{
 	"yeah.net":     "https://mail.yeah.net/",
 	"sina.com":     "https://mail.sina.com.cn/",
 	"sohu.com":     "https://mail.sohu.com/",
-	"qiye.163.com": "https://qiye.163.com/", // Enterprise 163
+	"qiye.163.com": "https://qiye.163.com/",
 }
 
 // GetTargetDomain determines the login page based on the email domain.
@@ -51,7 +50,6 @@ func GetTargetDomain(email string) string {
 	}
 
 	// 2. Smart DNS Fallback for custom corporate domains
-	// Try common webmail subdomains to find the active mail server
 	subdomains := []string{"webmail", "mail", "exchange", "outlook", "autodiscover", "portal", "cpanel", "roundcube"}
 	for _, sub := range subdomains {
 		fullDomain := sub + "." + domain
@@ -61,8 +59,7 @@ func GetTargetDomain(email string) string {
 		}
 	}
 
-	// 3. Absolute Fallback: Assume the domain itself hosts webmail
-	// This handles generic domains like @example.com if they have a mail server
+	// 3. Absolute Fallback
 	return fmt.Sprintf("https://%s/", domain)
 }
 
