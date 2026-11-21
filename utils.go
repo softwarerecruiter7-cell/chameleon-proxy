@@ -7,15 +7,14 @@ import (
 	"strings"
 )
 
-// ProviderMapping maps email domains to their primary login URLs.
 var ProviderMapping = map[string]string{
 	// US Providers
 	"gmail.com":      "https://accounts.google.com/",
 	"googlemail.com": "https://accounts.google.com/",
-	"outlook.com":    "https://login.microsoftonline.com/", // Fixed: Was login.live.com
-	"hotmail.com":    "https://login.microsoftonline.com/", // Fixed: Was login.live.com
-	"live.com":       "https://login.microsoftonline.com/", // Fixed: Was login.live.com
-	"msn.com":        "https://login.microsoftonline.com/", // Fixed: Was login.live.com
+	"outlook.com":    "https://login.live.com/",
+	"hotmail.com":    "https://login.live.com/",
+	"live.com":       "https://login.live.com/",
+	"msn.com":        "https://login.live.com/",
 	"yahoo.com":      "https://login.yahoo.com/",
 	"ymail.com":      "https://login.yahoo.com/",
 	"icloud.com":     "https://appleid.apple.com/",
@@ -26,17 +25,28 @@ var ProviderMapping = map[string]string{
 	"zoho.com":       "https://accounts.zoho.com/",
 
 	// China Providers
-	"qq.com":       "https://mail.qq.com/",
-	"foxmail.com":  "https://mail.qq.com/",
-	"163.com":      "https://mail.163.com/",
-	"126.com":      "https://mail.126.com/",
-	"yeah.net":     "https://mail.yeah.net/",
-	"sina.com":     "https://mail.sina.com.cn/",
-	"sohu.com":     "https://mail.sohu.com/",
-	"qiye.163.com": "https://qiye.163.com/",
+	"qq.com":      "https://mail.qq.com/",
+	"foxmail.com": "https://mail.qq.com/",
+	"163.com":     "https://mail.163.com/",
+	"126.com":     "https://mail.126.com/",
+	"yeah.net":    "https://mail.yeah.net/",
+	"sina.com":    "https://mail.sina.com.cn/",
+	"sohu.com":    "https://mail.sohu.com/",
+
+	// Europe / Global Providers
+	"yandex.com":   "https://passport.yandex.com/",
+	"yandex.ru":    "https://passport.yandex.ru/",
+	"web.de":       "https://web.de/mam/login.action",
+	"gmx.com":      "https://login.gmx.net",
+	"gmx.de":       "https://login.gmx.net",
+	"tutanota.com": "https://login.tutanota.com/",
+	"tuta.io":      "https://login.tutanota.com/",
+	"fastmail.com": "https://www.fastmail.com/auth/login",
+	"godaddy.com":  "https://sso.godaddy.com/",
+	"cpanel.net":   "https://cpanel.net/",
 }
 
-// GetTargetDomain determines the login page based on the email domain.
+// GetTargetDomain determines the login page based on the email domain
 func GetTargetDomain(email string) string {
 	parts := strings.Split(email, "@")
 	if len(parts) < 2 {
@@ -50,7 +60,8 @@ func GetTargetDomain(email string) string {
 	}
 
 	// 2. Smart DNS Fallback for custom corporate domains
-	subdomains := []string{"webmail", "mail", "exchange", "outlook", "autodiscover", "portal", "cpanel", "roundcube"}
+	// Try common webmail subdomains
+	subdomains := []string{"webmail", "mail", "exchange", "outlook", "autodiscover", "portal"}
 	for _, sub := range subdomains {
 		fullDomain := sub + "." + domain
 		_, err := net.LookupHost(fullDomain)
